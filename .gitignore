@@ -1,0 +1,12 @@
+.DS_Store
+__MACOSX/
+__pycache__/
+*.pyc
+.env
+.env.*
+data/
+member-info.xlsx
+*.key
+*.pem
+credentials.json
+auth.json
