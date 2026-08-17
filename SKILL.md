@@ -1,8 +1,6 @@
 ---
 name: mingyuan-toastmasters-agenda
 description: Create Mingyuan Yun Toastmasters meeting agenda sheets and visuals from Chinese role-signup text, including role parsing, missing-info checks, time planning, GPT Image visual generation, text QA, and HTML/PDF fallback. Use when the user asks for 会单, 例会议程, 角色接龙转会单, 明源云头马会单, Toastmasters agenda, meeting manager agenda output, or a polished agenda image/PDF for Mingyuan Yun Toastmasters Club.
-metadata:
-  version: "1.0.0"
 ---
 
 # Mingyuan Toastmasters Agenda
@@ -66,7 +64,7 @@ The two approval gates are:
    - The confirmed Markdown draft is the canonical content truth for image generation. It must contain every visible field that the final agenda needs.
 
 4. Produce a stable agenda visual.
-   - Once the content is confirmed and a strong visual reference is available, use GPT Image directly for the first final-quality agenda visual. Do not reject this route based only on generic text-rendering assumptions.
+   - Once the content is confirmed and a strong visual reference is available, use GPT Image directly for the first final-quality agenda visual. Treat dense Chinese text rendering as an empirical QA question: if the current image model has already passed a real agenda test, do not reject this route based only on generic assumptions.
    - Read `references/image-generation-workflow.md` before generating the image.
    - Use `assets/agenda-reference-good.png` as the stable information-design reference and `assets/agenda-a4-health-reference.png` as an A4 health-theme reference. Both are style references only; never copy their meeting-specific text.
    - Give image generation both: (a) an approved visual reference and (b) an A4 content-truth image containing every exact field. A verified HTML-rendered agenda PNG is useful as the content-truth reference.
