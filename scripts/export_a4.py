@@ -64,6 +64,12 @@ def run_chrome(command: list[str], expected_file: Path, timeout: int = 25) -> in
             text=True,
             timeout=timeout,
         )
+        if (
+            result.returncode != 0
+            and expected_file.is_file()
+            and expected_file.stat().st_size > 1000
+        ):
+            return 0
         return result.returncode
     except subprocess.TimeoutExpired:
         return 0 if expected_file.is_file() and expected_file.stat().st_size > 1000 else 124
@@ -128,6 +134,12 @@ def is_a4_portrait(size: tuple[float, float]) -> bool:
     return abs(width - 595.28) <= 3 and abs(height - 841.89) <= 3
 
 
+def chrome_compatibility_flags() -> list[str]:
+    if os.environ.get("AGENDA_CHROME_NO_SANDBOX") == "1":
+        return ["--no-sandbox", "--disable-software-rasterizer"]
+    return []
+
+
 def parse_visual_audit_dump(dump: str) -> dict[str, object] | None:
     match = re.search(
         r'<script id="agenda-audit-result" type="application/json">(.*?)</script>',
@@ -166,6 +178,7 @@ def run_visual_audit(chrome: str, html_path: Path) -> dict[str, object] | None:
     command = [
         chrome,
         "--headless=new",
+        *chrome_compatibility_flags(),
         "--disable-gpu",
         "--disable-background-networking",
         "--disable-component-update",
@@ -251,6 +264,7 @@ def main() -> None:
         command = [
             chrome,
             "--headless=new",
+            *chrome_compatibility_flags(),
             "--disable-gpu",
             "--disable-background-networking",
             "--disable-component-update",
@@ -358,6 +372,7 @@ def main() -> None:
             screenshot_command = [
                 chrome,
                 "--headless=new",
+                *chrome_compatibility_flags(),
                 "--disable-gpu",
                 "--disable-background-networking",
                 "--disable-component-update",

@@ -23,6 +23,7 @@ description: 将 Toastmasters 角色接龙、会议说明或旧会单参考，�
 6. 首次稳定信息确认后创建俱乐部 profile。用户明确长期修改默认地点、语言、组件、官员、介绍、入会信息、VPM 二维码或自定义块时才更新；官方俱乐部名称变更时按新名称创建新 profile。本期变化不覆盖 profile。
 
 详细的字段、空值语义、组件选择和 profile 命令见 [输入结构](references/input-schema.md)。
+在 WorkBuddy、本地模型或执行能力不确定的 Agent 中，改用 [本地/弱模型最短工作流](references/local-model-workflow.md)和 `scripts/run_agenda.py`，不让模型自己组装命令。
 
 ## 默认工作流
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +62,17 @@ class AgendaExporterTests(unittest.TestCase):
             )
         )
         self.assertFalse(EXPORTER.visual_audit_required("<html></html>"))
+
+    def test_chrome_no_sandbox_flags_are_opt_in(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(EXPORTER.chrome_compatibility_flags(), [])
+        with mock.patch.dict(
+            os.environ, {"AGENDA_CHROME_NO_SANDBOX": "1"}, clear=True
+        ):
+            self.assertEqual(
+                EXPORTER.chrome_compatibility_flags(),
+                ["--no-sandbox", "--disable-software-rasterizer"],
+            )
 
 
 if __name__ == "__main__":
