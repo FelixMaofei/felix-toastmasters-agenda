@@ -35,6 +35,7 @@ VISUAL_THEMES = {
     "leadership",
     "celebration",
 }
+HTML_RENDERERS = {"auto", "classic", "editorial"}
 
 STANDARD_TYPES = {
     "rules",
@@ -168,6 +169,19 @@ TOASTMASTERS_INTRO = {
         "organization that builds confidence and teaches public speaking, communication "
         "and leadership through a worldwide network of clubs."
     ),
+}
+
+MEETING_BOUNDARIES = {
+    "zh": [
+        "安静：会议过程中保持安静，手机调至静音或震动。",
+        "四类禁忌：演讲不涉及政治、宗教、色情或传销。",
+        "整洁：结束后带走个人物品与垃圾。",
+    ],
+    "en": [
+        "Quiet: keep phones silent or on vibrate during the meeting.",
+        "Four boundaries: avoid politics, religion, pornography and pyramid selling.",
+        "Clean: take personal belongings and rubbish when leaving.",
+    ],
 }
 
 TIMER_RULES = [
@@ -326,6 +340,17 @@ def toastmasters_intro(language: str) -> str:
     if language == "bilingual":
         return TOASTMASTERS_INTRO["zh"] + " " + TOASTMASTERS_INTRO["en"]
     return TOASTMASTERS_INTRO["zh"]
+
+
+def meeting_boundaries(language: str) -> list[str]:
+    if language == "en":
+        return list(MEETING_BOUNDARIES["en"])
+    if language == "bilingual":
+        return [
+            f"{zh} / {en}"
+            for zh, en in zip(MEETING_BOUNDARIES["zh"], MEETING_BOUNDARIES["en"])
+        ]
+    return list(MEETING_BOUNDARIES["zh"])
 
 
 def normalize_details(value: Any) -> list[str]:
@@ -2237,23 +2262,7 @@ def render_html(result: dict[str, Any]) -> str:
                     f"<p>{html.escape(toastmasters_intro(language))}</p>",
                 )
             elif component == "meeting_boundaries":
-                boundaries = [
-                    localized(
-                        "安静：会议过程中保持安静，手机调至静音或震动。",
-                        "Quiet: keep phones silent or on vibrate during the meeting.",
-                        language,
-                    ),
-                    localized(
-                        "四类禁忌：演讲不涉及政治、宗教、色情或传销。",
-                        "Four boundaries: avoid politics, religion, pornography and pyramid selling.",
-                        language,
-                    ),
-                    localized(
-                        "整洁：结束后带走个人物品与垃圾。",
-                        "Clean: take personal belongings and rubbish when leaving.",
-                        language,
-                    ),
-                ]
+                boundaries = meeting_boundaries(language)
                 support_cards[component] = support_card(
                     component,
                     localized(
@@ -2648,6 +2657,47 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 """
 
 
+def resolve_html_renderer(result: dict[str, Any], requested: str = "auto") -> str:
+    if requested not in HTML_RENDERERS:
+        raise ValueError("html renderer must be auto, classic, or editorial")
+    if requested != "auto":
+        return requested
+    language = result.get("club", {}).get("language", "zh")
+    layout = result.get("layout", "standard")
+    support = set(result.get("support_components", []))
+    if (
+        language in {"zh", "en"}
+        and layout == "standard"
+        and bool(support & {"timer_rules", "officers"})
+    ):
+        try:
+            from editorial_renderer import editorial_compatibility_errors
+        except ModuleNotFoundError:
+            from scripts.editorial_renderer import editorial_compatibility_errors
+        if not editorial_compatibility_errors(result):
+            return "editorial"
+    return "classic"
+
+
+def render_output_html(result: dict[str, Any], renderer: str = "auto") -> str:
+    renderer = resolve_html_renderer(result, renderer)
+    if renderer not in HTML_RENDERERS:
+        raise ValueError("html renderer must be auto, classic, or editorial")
+    if renderer == "classic":
+        return render_html(result)
+    try:
+        from editorial_renderer import render_editorial_html
+    except ModuleNotFoundError:
+        from scripts.editorial_renderer import render_editorial_html
+    language = result.get("club", {}).get("language", "zh")
+    return render_editorial_html(
+        result,
+        timer_rules=TIMER_RULES,
+        toastmasters_intro_text=toastmasters_intro(language),
+        meeting_boundary_lines=meeting_boundaries(language),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input_json", type=Path)
@@ -2678,6 +2728,12 @@ def main() -> None:
         help="save confirmed reusable club facts for later meeting tasks",
     )
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument(
+        "--html-renderer",
+        choices=sorted(HTML_RENDERERS),
+        default="auto",
+        help="choose the final HTML visual renderer without changing computed content",
+    )
     args = parser.parse_args()
 
     if args.profile and args.club_profile:
@@ -2775,7 +2831,20 @@ def main() -> None:
         encoding="utf-8",
     )
     markdown_path.write_text(render_markdown(result), encoding="utf-8")
-    html_path.write_text(render_html(result), encoding="utf-8")
+    try:
+        resolved_html_renderer = resolve_html_renderer(result, args.html_renderer)
+        rendered_html = render_output_html(result, resolved_html_renderer)
+    except (OSError, ValueError) as exc:
+        print(
+            json.dumps(
+                {**summary, "ok": False, "errors": [*errors, str(exc)]},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    html_path.write_text(rendered_html, encoding="utf-8")
 
     saved_profile_path: Path | None = None
     if args.save_profile:
@@ -2806,6 +2875,7 @@ def main() -> None:
                     "markdown": str(markdown_path),
                     "html": str(html_path),
                     "diagnostics": str(diagnostics_path),
+                    "html_renderer": resolved_html_renderer,
                     **(
                         {"club_profile": str(saved_profile_path)}
                         if saved_profile_path

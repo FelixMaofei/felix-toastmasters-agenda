@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import html as html_lib
 import json
 import os
 import re
@@ -127,6 +128,75 @@ def is_a4_portrait(size: tuple[float, float]) -> bool:
     return abs(width - 595.28) <= 3 and abs(height - 841.89) <= 3
 
 
+def parse_visual_audit_dump(dump: str) -> dict[str, object] | None:
+    match = re.search(
+        r'<script id="agenda-audit-result" type="application/json">(.*?)</script>',
+        dump,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return None
+    payload = html_lib.unescape(match.group(1)).strip()
+    if not payload:
+        return None
+    parsed = json.loads(payload)
+    if not isinstance(parsed, dict):
+        raise ValueError("agenda visual audit result must be an object")
+    return parsed
+
+
+def visual_audit_required(source: str) -> bool:
+    return bool(
+        re.search(
+            r'<meta\s+name="agenda-visual-audit"\s+content="required">',
+            source,
+        )
+    )
+
+
+def run_visual_audit(chrome: str, html_path: Path) -> dict[str, object] | None:
+    source = html_path.read_text(encoding="utf-8")
+    audit_required = visual_audit_required(source)
+    if 'id="agenda-audit-result"' not in source:
+        if audit_required:
+            raise ValueError(
+                "agenda requires visual audit but the audit result marker is missing"
+            )
+        return None
+    command = [
+        chrome,
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-sync",
+        "--no-first-run",
+        "--incognito",
+        "--virtual-time-budget=1800",
+        "--dump-dom",
+        html_path.as_uri(),
+    ]
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=12,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"agenda visual audit failed to run with code {result.returncode}")
+    report = parse_visual_audit_dump(result.stdout)
+    if report is None:
+        raise ValueError("agenda visual audit did not produce a result")
+    if report.get("ok") is not True:
+        failures = report.get("failures")
+        detail = json.dumps(failures, ensure_ascii=False)
+        raise ValueError(f"agenda visual audit failed: {detail}")
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input_html", type=Path)
@@ -157,6 +227,19 @@ def main() -> None:
         print(
             json.dumps(
                 {"ok": False, "errors": ["Chrome/Chromium is required to export the A4 PDF"]},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    try:
+        visual_audit = run_visual_audit(chrome, html_path)
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        print(
+            json.dumps(
+                {"ok": False, "errors": [str(exc)]},
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -318,6 +401,7 @@ def main() -> None:
                 "pages": pages if pages is not None else expected_pages,
                 "png": str(png_paths[0]),
                 "pngs": [str(path) for path in png_paths],
+                "visual_audit": "passed" if visual_audit is not None else "not_provided",
             },
             ensure_ascii=False,
             indent=2,

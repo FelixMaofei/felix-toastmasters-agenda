@@ -12,6 +12,16 @@
 
 版式层和主题层都不得改写姓名、角色、顺序、时长或时间点。主题层也不得修改版式容量或用裁切伪造单页。
 
+## 0. HTML 呈现器
+
+内容版式（`standard / feature / marathon`）决定会议信息的结构；HTML 呈现器决定如何把已计算结果铸成 A4。两者不是同一个字段，呈现器不进入 meeting JSON 或 computed JSON。
+
+- `editorial`：高密度出版型 A4，使用强页头、本地图标、侧栏、阶段导航时间表、底部信息带与品牌页脚。
+- `classic`：原有稳定版，继续服务纯议程、中英双语、演讲马拉松与当前 editorial 尚未覆盖的组合。
+- `auto`：中文/英文的 `standard` 会议，且选了时间官规则或官员团队时，选 `editorial`；`feature`、`marathon`、纯议程与双语暂继续使用 `classic`，直到各自的专用呈现器完成。
+
+可在调试时用 `--html-renderer classic|editorial`显式覆盖，日常使用保持 `auto`。该选项只改 HTML，同一份 `agenda.computed.json` 必须在两种呈现器中保持事实一致。
+
 ## 1. 版式路由
 
 `meeting.layout` 支持 `auto`、`standard`、`feature` 和 `marathon`。

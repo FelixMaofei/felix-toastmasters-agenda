@@ -38,6 +38,29 @@ class AgendaExporterTests(unittest.TestCase):
         self.assertFalse(EXPORTER.is_a4_portrait((612, 792)))
         self.assertFalse(EXPORTER.is_a4_portrait((841.89, 595.28)))
 
+    def test_visual_audit_dump_is_parsed(self) -> None:
+        dump = (
+            '<html data-agenda-audit="ok"><body>'
+            '<script id="agenda-audit-result" type="application/json">'
+            '{"ok":true,"failures":[]}'
+            "</script></body></html>"
+        )
+        self.assertEqual(
+            EXPORTER.parse_visual_audit_dump(dump),
+            {"ok": True, "failures": []},
+        )
+
+    def test_missing_visual_audit_result_returns_none(self) -> None:
+        self.assertIsNone(EXPORTER.parse_visual_audit_dump("<html></html>"))
+
+    def test_visual_audit_requirement_is_explicit(self) -> None:
+        self.assertTrue(
+            EXPORTER.visual_audit_required(
+                '<meta name="agenda-visual-audit" content="required">'
+            )
+        )
+        self.assertFalse(EXPORTER.visual_audit_required("<html></html>"))
+
 
 if __name__ == "__main__":
     unittest.main()

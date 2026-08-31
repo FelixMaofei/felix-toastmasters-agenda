@@ -271,6 +271,130 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertTrue(any("meeting.layout must be" in error for error in invalid_errors))
         self.assertTrue(any("meeting.visual_theme must be" in error for error in invalid_errors))
 
+    def test_editorial_renderer_preserves_computed_timeline_and_inlines_assets(self) -> None:
+        result, errors, _ = BUILDER.build_agenda(example())
+        self.assertEqual(errors, [])
+        self.assertEqual(BUILDER.resolve_html_renderer(result), "editorial")
+        rendered = BUILDER.render_output_html(result, "editorial")
+        self.assertIn('id="agenda-audit-result"', rendered)
+        self.assertIn("data:image/png;base64,", rendered)
+        self.assertIn('<svg class="ti ', rendered)
+        self.assertNotIn("assets/icons/", rendered)
+        self.assertNotIn("{{BODY}}", rendered)
+        previous = -1
+        for item in result["timeline"]:
+            position = rendered.find(item["label"])
+            self.assertGreater(position, previous, item["id"])
+            previous = position
+
+        pure = example()
+        pure["club"]["support_components"] = []
+        pure_result, pure_errors, _ = BUILDER.build_agenda(pure)
+        self.assertEqual(pure_errors, [])
+        self.assertEqual(BUILDER.resolve_html_renderer(pure_result), "classic")
+
+        feature = example()
+        feature["special_segments"] = [
+            {
+                "title": "工作坊",
+                "owner": "成员K",
+                "minutes": 15,
+                "after": "guest_introduction",
+            }
+        ]
+        feature_result, feature_errors, _ = BUILDER.build_agenda(feature)
+        self.assertEqual(feature_errors, [])
+        self.assertEqual(feature_result["layout"], "feature")
+        self.assertEqual(BUILDER.resolve_html_renderer(feature_result), "classic")
+
+    def test_editorial_renderer_rejects_bilingual_until_a_specific_layout_exists(self) -> None:
+        data = example()
+        data["club"]["language"] = "bilingual"
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        with self.assertRaisesRegex(ValueError, "supports zh or en"):
+            BUILDER.render_output_html(result, "editorial")
+
+    def test_editorial_auto_falls_back_instead_of_dropping_unsupported_content(self) -> None:
+        qr_data = example()
+        qr_data["club"]["support_components"].append("vpm_qr")
+        qr_data["club"]["vpm_qr_image"] = "../assets/toastmasters-logo.png"
+        qr_result, qr_errors, _ = BUILDER.build_agenda(
+            qr_data, source_dir=ROOT / "examples"
+        )
+        self.assertEqual(qr_errors, [])
+        self.assertEqual(BUILDER.resolve_html_renderer(qr_result), "classic")
+        with self.assertRaisesRegex(ValueError, "QR components"):
+            BUILDER.render_output_html(qr_result, "editorial")
+
+        crowded = example()
+        crowded["club"]["custom_support_blocks"] = [
+            {"id": f"custom-{index}", "title": f"自定义{index}", "lines": ["内容"]}
+            for index in range(1, 4)
+        ]
+        crowded_result, crowded_errors, _ = BUILDER.build_agenda(crowded)
+        self.assertEqual(crowded_errors, [])
+        self.assertEqual(BUILDER.resolve_html_renderer(crowded_result), "classic")
+        with self.assertRaisesRegex(ValueError, "at most 4 bottom"):
+            BUILDER.render_output_html(crowded_result, "editorial")
+
+        left_block = example()
+        left_block["club"]["custom_support_blocks"] = [
+            {
+                "id": "left-note",
+                "title": "侧栏说明",
+                "lines": ["不能改位置"],
+                "placement": "left",
+            }
+        ]
+        left_result, left_errors, _ = BUILDER.build_agenda(left_block)
+        self.assertEqual(left_errors, [])
+        self.assertEqual(BUILDER.resolve_html_renderer(left_result), "classic")
+        with self.assertRaisesRegex(ValueError, "placement:left"):
+            BUILDER.render_output_html(left_result, "editorial")
+
+    def test_editorial_does_not_reinterpret_slogan_or_values_custom_blocks(self) -> None:
+        data = example()
+        data["club"]["custom_support_blocks"] = [
+            {
+                "id": "slogan",
+                "title": "口号备选",
+                "lines": ["第一行", "第二行"],
+                "placement": "bottom",
+            }
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(BUILDER.resolve_html_renderer(result), "editorial")
+        rendered = BUILDER.render_output_html(result, "editorial")
+        self.assertIn("口号备选", rendered)
+        self.assertIn("第一行", rendered)
+        self.assertIn("第二行", rendered)
+
+    def test_editorial_uses_shared_boundaries_and_escapes_invalid_date(self) -> None:
+        data = example()
+        data["meeting"]["date"] = '<img src=x onerror="alert(1)">'
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        editorial = BUILDER.render_output_html(result, "editorial")
+        classic = BUILDER.render_html(result)
+        for expected in ("四类禁忌", "政治、宗教、色情或传销"):
+            self.assertIn(expected, editorial)
+            self.assertIn(expected, classic)
+        self.assertNotIn('<img src=x onerror="alert(1)">', editorial)
+        self.assertIn("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;", editorial)
+
+    def test_editorial_keeps_noncontiguous_phase_runs_in_original_order(self) -> None:
+        result, errors, _ = BUILDER.build_agenda(example())
+        self.assertEqual(errors, [])
+        result["timeline"][0]["section"] = "opening"
+        result["timeline"][1]["section"] = "first_half"
+        result["timeline"][2]["section"] = "opening"
+        rendered = BUILDER.render_output_html(result, "editorial")
+        labels = [result["timeline"][index]["label"] for index in range(3)]
+        positions = [rendered.find(label) for label in labels]
+        self.assertEqual(positions, sorted(positions))
+
     def test_optional_theme_image_is_embedded_without_changing_logo(self) -> None:
         data = example()
         data["meeting"]["theme_image"] = "../assets/toastmasters-logo.png"
