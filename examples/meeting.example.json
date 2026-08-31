@@ -35,6 +35,8 @@
     "word_of_day": "学习",
     "manager": "成员A",
     "president": "成员B",
+    "layout": "auto",
+    "visual_theme": "auto",
     "approved_overtime_minutes": 0
   },
   "roles": [

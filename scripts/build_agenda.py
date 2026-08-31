@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import html
 import json
 import math
 import re
+import shutil
 import sys
+import unicodedata
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -17,9 +20,21 @@ from typing import Any
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOGO = SKILL_ROOT / "assets" / "toastmasters-logo.png"
+PROFILE_ROOT = Path.home() / ".toastmasters-agenda" / "profiles"
 
 UNRESOLVED = {"", "?", "？", "🌺", "待定", "待确认", "招募中", "tbd", "pending", "todo"}
 LANGUAGES = {"zh", "en", "bilingual"}
+LAYOUTS = {"auto", "standard", "feature", "marathon"}
+VISUAL_THEMES = {
+    "auto",
+    "general",
+    "learning",
+    "technology",
+    "wellness",
+    "voice",
+    "leadership",
+    "celebration",
+}
 
 STANDARD_TYPES = {
     "rules",
@@ -334,6 +349,91 @@ def normalize_support_text(value: Any) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def normalized_club_name(value: Any) -> str:
+    return unicodedata.normalize("NFKC", str(value)).strip().casefold()
+
+
+def stored_club_profile_path(
+    club_name: Any, profile_root: Path | None = None
+) -> Path:
+    canonical = normalized_club_name(club_name)
+    if not canonical:
+        raise ValueError("club profile name cannot be empty")
+    slug = re.sub(r"[^\w-]+", "-", canonical, flags=re.UNICODE)
+    slug = re.sub(r"[_-]+", "-", slug).strip("-")[:48] or "club"
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:10]
+    return (profile_root or PROFILE_ROOT) / f"{slug}-{digest}.json"
+
+
+def resolve_profile_relative_paths(
+    profile: dict[str, Any], profile_path: Path
+) -> dict[str, Any]:
+    resolved = deepcopy(profile)
+    club = resolved.get("club")
+    if not isinstance(club, dict):
+        return resolved
+    raw_qr = club.get("vpm_qr_image")
+    if not is_unresolved(raw_qr):
+        qr_path = Path(str(raw_qr)).expanduser()
+        if not qr_path.is_absolute():
+            club["vpm_qr_image"] = str((profile_path.parent / qr_path).resolve())
+    return resolved
+
+
+def club_profile_from_data(
+    data: dict[str, Any], source_dir: Path | None = None
+) -> dict[str, Any]:
+    """Keep only confirmed, reusable club facts for a later meeting task."""
+    source = data.get("club")
+    if not isinstance(source, dict):
+        source = {}
+    profile: dict[str, Any] = {
+        "name": str(source.get("name", "")).strip(),
+        "default_location": str(source.get("default_location", "")).strip(),
+        "language": str(source.get("language", "zh")).strip().lower(),
+    }
+    for key in (
+        "support_components",
+        "custom_support_blocks",
+        "officers",
+        "club_intro",
+        "join_info",
+        "vpm_qr_image",
+    ):
+        if key in source:
+            profile[key] = deepcopy(source[key])
+    if "vpm_qr_image" in profile and source_dir is not None:
+        qr_path = Path(str(profile["vpm_qr_image"])).expanduser()
+        if not qr_path.is_absolute():
+            profile["vpm_qr_image"] = str((source_dir / qr_path).resolve())
+    return {"club": profile}
+
+
+def write_club_profile(
+    data: dict[str, Any], destination: Path, source_dir: Path
+) -> None:
+    destination = destination.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    profile = club_profile_from_data(data, source_dir=source_dir)
+    club = profile["club"]
+    raw_qr = club.get("vpm_qr_image")
+    if not is_unresolved(raw_qr):
+        source_qr = Path(str(raw_qr)).expanduser()
+        if source_qr.is_file():
+            suffix = source_qr.suffix.lower() or ".png"
+            asset_dir = destination.parent / "assets" / destination.stem
+            asset_dir.mkdir(parents=True, exist_ok=True)
+            copied_qr = asset_dir / f"vpm-qr{suffix}"
+            if source_qr.resolve() != copied_qr.resolve():
+                shutil.copy2(source_qr, copied_qr)
+            club["vpm_qr_image"] = str(copied_qr.relative_to(destination.parent))
+        else:
+            club.pop("vpm_qr_image", None)
+    destination.write_text(
+        json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def normalize_officer_key(value: Any) -> str | None:
     token = re.sub(r"[^a-z]", "", str(value).lower())
     original = str(value).strip().lower()
@@ -449,6 +549,103 @@ def find_photographer(backstage: list[dict[str, Any]]) -> str | None:
             if not is_unresolved(person):
                 return str(person).strip()
     return None
+
+
+def select_layout(
+    meeting: dict[str, Any],
+    items: list[dict[str, Any]],
+    errors: list[str],
+) -> str:
+    requested = str(meeting.get("layout", "auto")).strip().lower()
+    if requested not in LAYOUTS:
+        errors.append("meeting.layout must be auto, standard, feature, or marathon")
+        requested = "auto"
+    if requested != "auto":
+        return requested
+    if not is_unresolved(meeting.get("feature_item")):
+        return "feature"
+    prepared_count = sum(1 for item in items if item["type"] == "prepared_speech")
+    has_feature = any(
+        item["type"] == "special" and float(item["duration"]) >= 15
+        for item in items
+    ) or any(
+        item["type"] == "prepared_speech" and float(item["duration"]) >= 20
+        for item in items
+    )
+    if has_feature:
+        return "feature"
+    if prepared_count >= 5:
+        return "marathon"
+    return "standard"
+
+
+def select_feature_item(
+    meeting: dict[str, Any],
+    items: list[dict[str, Any]],
+    layout: str,
+    errors: list[str],
+) -> str | None:
+    raw_requested = meeting.get("feature_item")
+    requested = "" if is_unresolved(raw_requested) else str(raw_requested).strip()
+    if requested:
+        if not any(item["id"] == requested for item in items):
+            errors.append(f"meeting.feature_item references missing agenda item: {requested!r}")
+            return None
+        return requested
+    if layout != "feature":
+        return None
+    candidates = [
+        item
+        for item in items
+        if (item["type"] == "special" and float(item["duration"]) >= 15)
+        or (item["type"] == "prepared_speech" and float(item["duration"]) >= 20)
+    ]
+    if not candidates:
+        return None
+    longest = max(float(item["duration"]) for item in candidates)
+    return next(item["id"] for item in candidates if float(item["duration"]) == longest)
+
+
+def select_visual_theme(
+    meeting: dict[str, Any],
+    items: list[dict[str, Any]],
+    errors: list[str],
+) -> str:
+    requested = str(meeting.get("visual_theme", "auto")).strip().lower()
+    if requested not in VISUAL_THEMES:
+        errors.append(
+            "meeting.visual_theme must be auto, general, learning, technology, "
+            "wellness, voice, leadership, or celebration"
+        )
+        requested = "auto"
+    if requested != "auto":
+        return requested
+    primary_text = " ".join(
+        [str(meeting.get("theme", "")), str(meeting.get("word_of_day", ""))]
+    ).lower()
+    secondary_text = " ".join(
+        [
+            *[str(item.get("label", "")) for item in items],
+            *[
+                str(detail)
+                for item in items
+                for detail in item.get("details", [])
+            ],
+        ]
+    ).lower()
+    keyword_groups = [
+        ("technology", ("ai", "vibe", "coding", "code", "科技", "代码", "数字", "智能")),
+        ("wellness", ("health", "wellness", "健康", "体质", "疗愈", "自然", "冥想")),
+        ("voice", ("voice", "speech", "story", "声音", "表达", "演讲", "故事")),
+        ("celebration", ("celebration", "anniversary", "周年", "庆典", "庆祝", "颁奖")),
+        ("leadership", ("leadership", "leader", "领导", "领导力", "影响力")),
+        ("learning", ("learn", "brain", "knowledge", "book", "学习", "思考", "大脑", "知识", "成长")),
+    ]
+    for text in (primary_text, secondary_text):
+        for theme, keywords in keyword_groups:
+            if any(keyword in text for keyword in keywords):
+                return theme
+    return "general"
 
 
 def make_item(
@@ -1156,6 +1353,25 @@ def validate_role_relationships(items: list[dict[str, Any]], warnings: list[str]
             )
 
 
+def validate_auto_flexible_durations(
+    items: list[dict[str, Any]], warnings: list[str]
+) -> None:
+    comfortable = {
+        "photo_break": (3, 10),
+        "sharing": (3, 10),
+    }
+    for item in items:
+        if not item.get("computed_flexible") or item["type"] not in comfortable:
+            continue
+        lower, upper = comfortable[item["type"]]
+        duration = float(item["duration"])
+        if duration < lower or duration > upper:
+            warnings.append(
+                f"{item['type']} was automatically set to {format_minutes(item['duration'])} "
+                f"minutes; confirm this is operationally suitable or rebalance the agenda"
+            )
+
+
 def assign_timeline(
     items: list[dict[str, Any]], start: int | float
 ) -> int | float:
@@ -1248,6 +1464,14 @@ def build_agenda(
                 errors,
                 "meeting.voting_qr_image",
             )
+    theme_art_data = ""
+    if not is_unresolved(meeting.get("theme_image")):
+        theme_art_data = resolve_support_image(
+            meeting.get("theme_image"),
+            resolved_source_dir,
+            errors,
+            "meeting.theme_image",
+        )
 
     try:
         start = parse_clock(meeting.get("start"))
@@ -1306,6 +1530,9 @@ def build_agenda(
         errors,
     )
     attach_transition_overrides(items, transition_overrides, errors)
+    layout = select_layout(meeting, items, errors)
+    feature_item_id = select_feature_item(meeting, items, layout, errors)
+    visual_theme = select_visual_theme(meeting, items, errors)
     validate_owners(items, errors)
     transition_minutes = apply_transitions(items, errors)
     target_item_minutes = declared_window - transition_minutes
@@ -1343,10 +1570,11 @@ def build_agenda(
 
     final_cursor = assign_timeline(items, start)
     validate_role_relationships(items, warnings)
+    validate_auto_flexible_durations(items, warnings)
     effective_window = minutes_from_ticks(
         minute_ticks(declared_window) + minute_ticks(approved_overtime)
     )
-    page_item_limit = 30
+    page_item_limit = 36 if layout == "marathon" else 30 if layout == "standard" else 28
     if len(items) > page_item_limit:
         errors.append(
             f"single-page A4 capacity exceeded: {len(items)} agenda rows; "
@@ -1374,6 +1602,9 @@ def build_agenda(
         "final_end": format_clock(final_cursor),
         "row_count": len(items),
         "page_count": estimated_page_count,
+        "layout": layout,
+        "feature_item": feature_item_id,
+        "visual_theme": visual_theme,
     }
 
     result = {
@@ -1410,9 +1641,13 @@ def build_agenda(
         "warnings": warnings,
         "support_components": support_components,
         "custom_support_blocks": custom_support_blocks,
+        "layout": layout,
+        "feature_item": feature_item_id,
+        "visual_theme": visual_theme,
         "_assets": {
             "vpm_qr_data_uri": vpm_qr_data,
             "voting_qr_data_uri": voting_qr_data,
+            "theme_art_data_uri": theme_art_data,
         },
     }
     result["meeting"]["voting_qr_present"] = bool(voting_qr_data)
@@ -1668,6 +1903,10 @@ def render_html(result: dict[str, Any]) -> str:
     meeting = result["meeting"]
     computed = result["computed"]
     language = club["language"]
+    layout = result.get("layout", "standard")
+    feature_item_id = result.get("feature_item")
+    visual_theme = result.get("visual_theme", "general")
+    theme_art = result.get("_assets", {}).get("theme_art_data_uri", "")
     logo = image_data_uri(DEFAULT_LOGO)
     row_count = len(result["timeline"])
     timeline_pages = [result["timeline"]]
@@ -1749,6 +1988,34 @@ def render_html(result: dict[str, Any]) -> str:
                 last_section = current_section
             details = " · ".join(html.escape(value) for value in item.get("details", []))
             detail_html = f'<div class="detail">{details}</div>' if details else ""
+            if layout == "feature" and item["id"] == feature_item_id:
+                feature_details = "".join(
+                    f"<span>{html.escape(value)}</span>"
+                    for value in item.get("details", [])
+                )
+                feature_details_html = (
+                    f'<div class="feature-beats">{feature_details}</div>'
+                    if feature_details
+                    else ""
+                )
+                duration = format_minutes(item["duration"])
+                rows.append(
+                    '<tr class="feature-highlight"><td colspan="4">'
+                    f'<div class="feature-highlight-grid" data-minutes="{duration}">'
+                    f'<div class="feature-time">{html.escape(item["start"])}</div>'
+                    '<div class="feature-copy">'
+                    f'<strong>{html.escape(item["label"])}</strong>{feature_details_html}'
+                    "</div>"
+                    '<div class="feature-owner">'
+                    f'<small>{html.escape(localized("主讲", "Lead", language))}</small>'
+                    f'<strong>{html.escape(item["owner"])}</strong>'
+                    "</div>"
+                    '<div class="feature-duration">'
+                    f'<strong>{duration}</strong><span>min</span>'
+                    "</div>"
+                    "</div></td></tr>"
+                )
+                continue
             rows.append(
                 f'<tr class="item-row type-{html.escape(item["type"])}">'
                 f'<td class="time">{html.escape(item["start"])}</td>'
@@ -1759,18 +2026,132 @@ def render_html(result: dict[str, Any]) -> str:
             )
         return "".join(rows)
 
+    def marathon_flow(page_items: list[dict[str, Any]]) -> str:
+        speeches = [item for item in page_items if item["type"] == "prepared_speech"]
+        evaluations = {
+            item["id"].split(":", 1)[1]: item
+            for item in page_items
+            if item["type"] == "prepared_evaluation" and ":" in item["id"]
+        }
+        paired_ids = {item["id"] for item in speeches} | {
+            item["id"] for item in evaluations.values()
+        }
+        remaining = [item for item in page_items if item["id"] not in paired_ids]
+
+        section_order: list[str] = []
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in remaining:
+            section = item["section"]
+            if section not in grouped:
+                section_order.append(section)
+                grouped[section] = []
+            grouped[section].append(item)
+
+        def compact_section(section: str, items: list[dict[str, Any]]) -> str:
+            cards = []
+            for item in items:
+                details = " / ".join(
+                    html.escape(value) for value in item.get("details", [])
+                )
+                details_html = f"<small>{details}</small>" if details else ""
+                cards.append(
+                    f'<article class="marathon-item type-{html.escape(item["type"])}">'
+                    f'<time>{html.escape(item["start"])}</time>'
+                    '<div class="marathon-copy">'
+                    f'<strong>{html.escape(item["label"])}</strong>{details_html}'
+                    "</div>"
+                    f'<div class="marathon-owner">{html.escape(item["owner"])}</div>'
+                    f'<div class="marathon-duration">{format_minutes(item["duration"])} min</div>'
+                    "</article>"
+                )
+            start = items[0]["start"]
+            end = items[-1]["end"]
+            return (
+                f'<section class="marathon-section section-{html.escape(section)}">'
+                '<header>'
+                f'<strong>{html.escape(section_label(section, language))}</strong>'
+                f'<span>{html.escape(start)}-{html.escape(end)}</span>'
+                "</header>"
+                f'<div class="marathon-cards">{"".join(cards)}</div>'
+                "</section>"
+            )
+
+        blocks: list[str] = []
+        if "opening" in grouped:
+            blocks.append(compact_section("opening", grouped.pop("opening")))
+            section_order.remove("opening")
+
+        if speeches:
+            pair_cards: list[str] = []
+            pair_end = speeches[-1]["end"]
+            for index, speech in enumerate(speeches, start=1):
+                suffix = speech["id"].split(":", 1)[1]
+                evaluation = evaluations.get(suffix)
+                speech_details = " / ".join(
+                    html.escape(value) for value in speech.get("details", [])
+                )
+                evaluation_html = (
+                    '<div class="pair-evaluation">'
+                    f'<time>{html.escape(evaluation["start"])}</time>'
+                    f'<span>{html.escape(localized("点评", "Evaluation", language))}</span>'
+                    f'<strong>{html.escape(evaluation["owner"])}</strong>'
+                    f'<small>{format_minutes(evaluation["duration"])} min</small>'
+                    "</div>"
+                    if evaluation
+                    else '<div class="pair-evaluation missing">-</div>'
+                )
+                if evaluation:
+                    pair_end = evaluation["end"]
+                pair_cards.append(
+                    '<article class="speech-pair">'
+                    f'<div class="pair-number">{index}</div>'
+                    '<div class="pair-speech">'
+                    f'<time>{html.escape(speech["start"])}</time>'
+                    f'<strong>{html.escape(speech["label"])}</strong>'
+                    f'<small>{speech_details}</small>'
+                    f'<span>{html.escape(speech["owner"])}</span>'
+                    f'<b>{format_minutes(speech["duration"])} min</b>'
+                    "</div>"
+                    f"{evaluation_html}"
+                    "</article>"
+                )
+            blocks.append(
+                '<section class="marathon-section paired-section">'
+                '<header>'
+                f'<strong>{html.escape(localized("演讲与点评", "Speeches & Evaluations", language))}</strong>'
+                f'<span>{html.escape(speeches[0]["start"])}-{html.escape(pair_end)}</span>'
+                "</header>"
+                f'<div class="speech-pair-grid">{"".join(pair_cards)}</div>'
+                "</section>"
+            )
+
+        for section in section_order:
+            if grouped.get(section):
+                blocks.append(compact_section(section, grouped[section]))
+        return f'<div class="marathon-flow">{"".join(blocks)}</div>'
+
     page_blocks: list[str] = []
     total_pages = 1
     for page_index, page_items in enumerate(timeline_pages, start=1):
         page_marker = f"{page_index}/{total_pages}"
         sparse_class = " sparse-page" if len(page_items) < 12 else ""
         mode_class = " with-support" if has_support else " no-support"
+        theme_art_class = " has-theme-art" if theme_art else ""
+        timeline_markup = (
+            marathon_flow(page_items)
+            if layout == "marathon"
+            else "<table>"
+            f"<thead><tr><th>{table_headers[0]}</th><th>{table_headers[1]}</th><th>{table_headers[2]}</th><th>{table_headers[3]}</th></tr></thead>"
+            f"<tbody>{page_rows(page_items)}</tbody>"
+            "</table>"
+        )
         page_blocks.append(
             f"""
-<main class="page {density} lang-{html.escape(language)}{sparse_class}{mode_class}">
+<main class="page {density} lang-{html.escape(language)}{sparse_class}{mode_class}{theme_art_class} layout-{html.escape(layout)} visual-{html.escape(visual_theme)}">
   <div class="brand-ribbon" aria-hidden="true"><span></span><span></span><span></span></div>
   <header class="masthead">
     {"<img class='logo' src='" + logo + "' alt='Toastmasters International'>" if logo else "<div class='logo-fallback'>TOASTMASTERS<br>INTERNATIONAL</div>"}
+    {"<img class='theme-art' src='" + html.escape(theme_art, quote=True) + "' alt=''>" if theme_art else ""}
     <div class="title-block">
       <div class="kicker">{kicker}</div>
       <h1>{html.escape(club['name'])} {html.escape(localized('例会议程', 'Meeting Agenda', language))}</h1>
@@ -1796,10 +2177,7 @@ def render_html(result: dict[str, Any]) -> str:
     <section class="timeline-panel">
       <h2>{html.escape(localized('会议流程', 'Meeting Flow', language))}<span>{computed['start']}-{computed['final_end']}</span></h2>
       <div class="timeline">
-        <table>
-          <thead><tr><th>{table_headers[0]}</th><th>{table_headers[1]}</th><th>{table_headers[2]}</th><th>{table_headers[3]}</th></tr></thead>
-          <tbody>{page_rows(page_items)}</tbody>
-        </table>
+        {timeline_markup}
       </div>
     </section>
   </section>
@@ -1815,8 +2193,13 @@ def render_html(result: dict[str, Any]) -> str:
     if has_support:
         support_cards: dict[str, str] = {}
 
-        def support_card(title: str, body: str, wide: bool = False) -> str:
-            card_class = "support-card wide" if wide else "support-card"
+        def support_card(
+            card_key: str, title: str, body: str, wide: bool = False
+        ) -> str:
+            safe_key = re.sub(r"[^a-z0-9_-]+", "-", card_key.lower()).strip("-")
+            card_class = f"support-card component-{safe_key}"
+            if wide:
+                card_class += " wide"
             return (
                 f'<article class="module {card_class}">'
                 f'<h2>{html.escape(title)}</h2>{body}</article>'
@@ -1839,11 +2222,13 @@ def render_html(result: dict[str, Any]) -> str:
                     )
                 timer_body = f'<div class="timer-rules">{"".join(timer_rows)}</div>'
                 support_cards[component] = support_card(
+                    component,
                     localized("时间官规则", "Timer Rules", language),
                     timer_body,
                 )
             elif component == "toastmasters_intro":
                 support_cards[component] = support_card(
+                    component,
                     localized(
                         "头马国际演讲会",
                         "Toastmasters International",
@@ -1870,6 +2255,7 @@ def render_html(result: dict[str, Any]) -> str:
                     ),
                 ]
                 support_cards[component] = support_card(
+                    component,
                     localized(
                         "会议秩序与内容边界",
                         "Meeting Conduct & Content Boundaries",
@@ -1883,11 +2269,13 @@ def render_html(result: dict[str, Any]) -> str:
                     for row in club["officers"]
                 )
                 support_cards[component] = support_card(
+                    component,
                     localized("当届官员团队", "Current Officer Team", language),
                     f'<div class="officer-list">{officer_rows}</div>',
                 )
             elif component == "club_intro":
                 support_cards[component] = support_card(
+                    component,
                     localized("俱乐部介绍", "About the Club", language),
                     "<ul>"
                     + "".join(
@@ -1897,6 +2285,7 @@ def render_html(result: dict[str, Any]) -> str:
                 )
             elif component == "join_info":
                 support_cards[component] = support_card(
+                    component,
                     localized("如何入会", "How to Join", language),
                     "<ul>"
                     + "".join(
@@ -1923,6 +2312,7 @@ def render_html(result: dict[str, Any]) -> str:
             )
         if qr_items:
             support_cards["qr_codes"] = support_card(
+                "qr_codes",
                 localized("二维码", "QR Codes", language),
                 f'<div class="qr-grid">{"".join(qr_items)}</div>',
                 wide=True,
@@ -1934,6 +2324,7 @@ def render_html(result: dict[str, Any]) -> str:
         for block in custom_support_blocks:
             key = f"custom:{block['id']}"
             support_cards[key] = support_card(
+                key,
                 block["title"],
                 "<ul>"
                 + "".join(f"<li>{html.escape(line)}</li>" for line in block["lines"])
@@ -1981,18 +2372,22 @@ def render_html(result: dict[str, Any]) -> str:
         left_weight = 3
         left_keys: list[str] = []
         bottom_keys: list[str] = []
-        for key in [*built_in_sequence, *custom_keys]:
-            preferred = placement.get(key, "auto")
-            if preferred == "left":
-                left_keys.append(key)
-                left_weight += weight.get(key, 3)
-            elif preferred == "bottom":
-                bottom_keys.append(key)
-            elif left_weight + weight.get(key, 3) <= left_capacity:
-                left_keys.append(key)
-                left_weight += weight.get(key, 3)
-            else:
-                bottom_keys.append(key)
+        all_keys = [*built_in_sequence, *custom_keys]
+        if layout == "marathon":
+            bottom_keys = all_keys
+        else:
+            for key in all_keys:
+                preferred = placement.get(key, "auto")
+                if preferred == "left":
+                    left_keys.append(key)
+                    left_weight += weight.get(key, 3)
+                elif preferred == "bottom":
+                    bottom_keys.append(key)
+                elif left_weight + weight.get(key, 3) <= left_capacity:
+                    left_keys.append(key)
+                    left_weight += weight.get(key, 3)
+                else:
+                    bottom_keys.append(key)
 
         left_html = "".join(support_cards[key] for key in left_keys)
         bottom_html = "".join(support_cards[key] for key in bottom_keys)
@@ -2074,7 +2469,7 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 .brand-ribbon span:nth-child(2) {{ background: #f2c94c; transform: skewX(-35deg); }}
 .brand-ribbon span:nth-child(3) {{ background: #a6192e; transform: skewX(-35deg); }}
 .masthead {{ position: relative; min-height: 31mm; display: grid; grid-template-columns: 33mm 1fr; gap: 5mm; align-items: center; padding: 1mm 5mm 2.5mm; overflow: hidden; border-bottom: .45mm solid #c89524; }}
-.masthead::before {{ content: ""; position: absolute; left: -30mm; top: -31mm; width: 95mm; height: 54mm; border: 2.2mm solid #004165; border-radius: 50%; opacity: .9; pointer-events: none; }}
+.masthead::before {{ content: ""; position: absolute; left: -30mm; top: -31mm; width: 74mm; height: 54mm; border: 2.2mm solid #004165; border-radius: 50%; opacity: .9; pointer-events: none; }}
 .masthead .logo {{ position: relative; z-index: 1; width: 29mm; height: 29mm; }}
 .title-block {{ position: relative; z-index: 1; min-width: 0; text-align: center; }}
 .title-block .kicker {{ margin: 0 0 .8mm; color: #9b6a00; font-size: 2.6mm; letter-spacing: .35mm; }}
@@ -2095,7 +2490,7 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 .no-support .main-grid {{ grid-template-columns: minmax(0,1fr); }}
 .no-support .left-rail {{ display: none; }}
 .left-rail {{ min-width: 0; display: flex; flex-direction: column; gap: 1.7mm; }}
-.module {{ border: .3mm solid #174f7f; border-radius: 1.2mm; background: #fff; padding: 1.5mm; font-size: 2.05mm; line-height: 1.24; overflow: hidden; }}
+.module {{ border: .3mm solid #174f7f; border-radius: 1.2mm; background: #fff; padding: 1.5mm; font-size: 2.15mm; line-height: 1.28; overflow: hidden; }}
 .module h2 {{ margin: -1.5mm -1.5mm 1.2mm; padding: 1mm 1.5mm; background: #004165; border-bottom: .5mm solid #d6a329; color: white; font-size: 2.8mm; line-height: 1.05; letter-spacing: .08mm; }}
 .backstage-list {{ display: grid; }}
 .backstage-list > div {{ min-height: 5.6mm; display: grid; grid-template-columns: 1.2fr 1fr; align-items: center; gap: 1mm; padding: .7mm .5mm; border-bottom: .18mm solid #c9d5df; }}
@@ -2110,11 +2505,11 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 .timeline thead th:nth-child(1) {{ width: 18mm; }}
 .timeline thead th:nth-child(3) {{ width: 28mm; }}
 .timeline thead th:nth-child(4) {{ width: 15mm; }}
-.timeline tbody td {{ padding: .55mm 1mm; font-size: 2.05mm; line-height: 1.06; }}
+.timeline tbody td {{ padding: .55mm 1mm; font-size: 2.2mm; line-height: 1.08; }}
 .timeline .section-row td {{ padding: .7mm 1mm; background: #edf4f8; color: #073e70; font-size: 2.35mm; text-align: center; }}
 .timeline .section-row td > div {{ display: flex; justify-content: center; align-items: baseline; gap: 1.2mm; }}
 .timeline .section-row span {{ font-size: 2mm; font-weight: 700; }}
-.timeline .detail {{ font-size: 1.65mm; }}
+.timeline .detail {{ font-size: 1.85mm; }}
 .timeline .type-special .activity,
 .timeline .type-special .owner,
 .timeline .type-special .duration {{ color: #772432; font-weight: 800; }}
@@ -2136,8 +2531,112 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 .footer-club {{ color: #f2df74; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-weight: 800; font-size: 3mm; }}
 .lang-bilingual .title-block h1 {{ font-size: 6.2mm; }}
 .lang-bilingual .meta-cell {{ font-size: 1.95mm; }}
-.lang-bilingual .timeline tbody td {{ font-size: 1.75mm; }}
-.lang-bilingual .module {{ font-size: 1.75mm; }}
+.lang-bilingual .timeline tbody td {{ font-size: 1.95mm; }}
+.lang-bilingual .module {{ font-size: 2.1mm; }}
+.page {{ --theme-accent: #c89524; --theme-soft: #edf4f8; }}
+.visual-learning {{ --theme-accent: #b77a00; --theme-soft: #fff7df; }}
+.visual-technology {{ --theme-accent: #557b96; --theme-soft: #edf4f8; }}
+.visual-wellness {{ --theme-accent: #65806f; --theme-soft: #eef5ef; }}
+.visual-voice {{ --theme-accent: #772432; --theme-soft: #f7edef; }}
+.visual-leadership {{ --theme-accent: #772432; --theme-soft: #f5edef; }}
+.visual-celebration {{ --theme-accent: #c89524; --theme-soft: #fff5d8; }}
+.theme-line {{ color: var(--theme-accent); }}
+.theme-line span {{ background: var(--theme-accent); }}
+.meta-cell .word-value {{ color: var(--theme-accent); }}
+.timeline .section-row td {{ background: var(--theme-soft); }}
+.masthead::after {{ content: ""; position: absolute; z-index: 0; right: -8mm; top: -12mm; width: 62mm; height: 48mm; opacity: .45; pointer-events: none; }}
+.visual-learning .masthead::after {{ background: radial-gradient(circle at 75% 45%, transparent 0 10mm, color-mix(in srgb,var(--theme-accent) 22%,transparent) 10.3mm 10.6mm, transparent 11mm), radial-gradient(circle at 78% 45%, color-mix(in srgb,var(--theme-accent) 15%,transparent) 0 1.2mm, transparent 1.4mm); background-size: 100% 100%, 9mm 9mm; }}
+.visual-technology .masthead::after {{ background: repeating-linear-gradient(0deg,transparent 0 6mm,color-mix(in srgb,var(--theme-accent) 22%,transparent) 6.2mm 6.5mm), repeating-linear-gradient(90deg,transparent 0 9mm,color-mix(in srgb,var(--theme-accent) 18%,transparent) 9.2mm 9.5mm); transform: skewX(-16deg); }}
+.visual-wellness .masthead::after {{ border: 1mm solid color-mix(in srgb,var(--theme-accent) 45%,transparent); border-radius: 70% 0 70% 0; transform: rotate(-18deg); background: radial-gradient(ellipse at 50% 100%,color-mix(in srgb,var(--theme-accent) 18%,transparent),transparent 65%); }}
+.visual-voice .masthead::after {{ background: repeating-radial-gradient(ellipse at 90% 50%,transparent 0 4mm,color-mix(in srgb,var(--theme-accent) 28%,transparent) 4.2mm 4.5mm,transparent 4.7mm 8mm); }}
+.visual-leadership .masthead::after {{ background: linear-gradient(135deg,transparent 42%,color-mix(in srgb,var(--theme-accent) 24%,transparent) 42% 44%,transparent 44% 56%,color-mix(in srgb,var(--theme-accent) 18%,transparent) 56% 58%,transparent 58%); }}
+.visual-celebration .masthead::after {{ background: radial-gradient(circle,color-mix(in srgb,var(--theme-accent) 42%,transparent) 0 1mm,transparent 1.2mm); background-size: 9mm 9mm; transform: rotate(12deg); }}
+.theme-art {{ position: absolute; z-index: 0; right: 0; top: 0; width: 58mm; height: 32mm; object-fit: contain; object-position: right top; opacity: .72; }}
+.has-theme-art .title-block {{ padding-right: 42mm; }}
+.layout-feature .main-grid {{ grid-template-columns: minmax(0,.72fr) minmax(48mm,.28fr); }}
+.layout-feature .timeline-panel {{ grid-column: 1; grid-row: 1; }}
+.layout-feature .left-rail {{ grid-column: 2; grid-row: 1; }}
+.layout-feature.no-support .main-grid {{ grid-template-columns: minmax(0,1fr); }}
+.layout-feature.no-support .timeline-panel {{ grid-column: 1; }}
+.layout-feature .timeline .type-special td {{ padding-top: 2.7mm; padding-bottom: 2.7mm; background: #772432; color: #fff; border-bottom-color: #772432; }}
+.layout-feature .timeline .type-special .activity {{ color: #fff; font-size: 3.5mm; letter-spacing: .05mm; }}
+.layout-feature .timeline .type-special .owner,
+.layout-feature .timeline .type-special .duration,
+.layout-feature .timeline .type-special .detail {{ color: #f2df74; }}
+.layout-feature .feature-highlight td {{ padding: 0; background: #772432; color: #fff; border-bottom-color: #772432; }}
+.feature-highlight-grid {{ position: relative; min-height: 24mm; height: 100%; display: grid; grid-template-columns: 19mm minmax(0,1fr) 24mm 24mm; align-items: center; gap: 2mm; padding: 3.5mm 2.4mm; border-top: .7mm solid #d6a329; border-bottom: .7mm solid #d6a329; overflow: hidden; isolation: isolate; }}
+.feature-highlight-grid::before {{ content: ""; position: absolute; z-index: -1; inset: 0; background: linear-gradient(128deg,transparent 0 58%,rgba(242,223,116,.08) 58% 59%,transparent 59% 67%,rgba(255,255,255,.055) 67% 68%,transparent 68%); }}
+.feature-highlight-grid::after {{ content: attr(data-minutes); position: absolute; z-index: -1; right: 5mm; bottom: -8mm; color: rgba(255,255,255,.055); font-size: 31mm; font-weight: 900; line-height: 1; font-variant-numeric: tabular-nums; }}
+.feature-time {{ position: relative; z-index: 1; color: #f2df74; font-size: 3.2mm; font-weight: 900; font-variant-numeric: tabular-nums; }}
+.feature-copy {{ position: relative; z-index: 1; min-width: 0; }}
+.feature-copy > strong {{ display: block; color: #fff; font-size: 4.5mm; line-height: 1.08; letter-spacing: .08mm; }}
+.feature-beats {{ margin-top: 2.2mm; display: grid; grid-template-columns: repeat(auto-fit,minmax(25mm,1fr)); gap: 1.5mm; }}
+.feature-beats span {{ padding-top: .9mm; border-top: .28mm solid rgba(242,223,116,.72); color: #fff6dc; font-size: 2mm; font-weight: 650; line-height: 1.28; text-wrap: balance; }}
+.feature-owner {{ position: relative; z-index: 1; display: grid; gap: .8mm; color: #f2df74; text-align: center; }}
+.feature-owner small {{ font-size: 1.7mm; font-weight: 700; }}
+.feature-owner strong {{ font-size: 2.7mm; font-weight: 850; }}
+.feature-duration {{ position: relative; z-index: 1; display: flex; justify-content: flex-end; align-items: baseline; gap: .8mm; color: #f2df74; text-align: right; }}
+.feature-duration strong {{ font-size: 6mm; line-height: 1; font-weight: 900; }}
+.feature-duration span {{ font-size: 2.1mm; font-weight: 800; }}
+.page.with-support:not(.layout-marathon) .left-rail {{ gap: 0; border: .3mm solid #174f7f; border-radius: 1.2mm; overflow: hidden; background: color-mix(in srgb,var(--theme-soft) 32%,#fff); }}
+.page.with-support:not(.layout-marathon) .left-rail .module {{ --rail-grow: 3; flex: var(--rail-grow) 1 0; min-height: min-content; display: flex; flex-direction: column; border: 0; border-bottom: .22mm solid #aebfcb; border-radius: 0; background: rgba(255,255,255,.88); }}
+.page.with-support:not(.layout-marathon) .left-rail .module:last-child {{ border-bottom: 0; }}
+.page.with-support:not(.layout-marathon) .left-rail .module > :not(h2) {{ margin-top: auto; margin-bottom: auto; }}
+.page.with-support:not(.layout-marathon) .left-rail .backstage-module {{ --rail-grow: 3; }}
+.page.with-support:not(.layout-marathon) .left-rail .component-timer_rules {{ --rail-grow: 6; }}
+.page.with-support:not(.layout-marathon) .left-rail .component-officers {{ --rail-grow: 5; }}
+.page.with-support:not(.layout-marathon) .left-rail .component-toastmasters_intro {{ --rail-grow: 3; }}
+.page.with-support:not(.layout-marathon) .left-rail .component-meeting_boundaries {{ --rail-grow: 4; }}
+.layout-marathon .backstage-strip {{ display: flex; }}
+.layout-marathon .main-grid {{ grid-template-columns: minmax(0,1fr); }}
+.layout-marathon .left-rail {{ display: none; }}
+.layout-marathon .timeline {{ display: flex; padding: 1.2mm; }}
+.marathon-flow {{ flex: 1; display: flex; flex-direction: column; gap: .55mm; }}
+.marathon-section {{ display: flex; flex-direction: column; border: .22mm solid #c8d5df; background: #fff; }}
+.marathon-section > header {{ min-height: 4.5mm; display: flex; justify-content: space-between; align-items: center; padding: .5mm 1.1mm; background: var(--theme-soft); color: #073e70; }}
+.marathon-section > header strong {{ font-size: 2.4mm; }}
+.marathon-section > header span {{ font-size: 1.9mm; font-weight: 700; font-variant-numeric: tabular-nums; }}
+.marathon-cards {{ flex: 1; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); grid-auto-rows: 1fr; gap: .4mm; padding: .5mm; }}
+.marathon-item {{ min-width: 0; min-height: 6.5mm; display: grid; grid-template-columns: 11mm minmax(0,1fr) 19mm 11mm; gap: .6mm; align-items: center; padding: .45mm .8mm; border: .2mm solid #d5dfe6; border-radius: 1mm; background: #fff; }}
+.marathon-item time {{ color: var(--theme-accent); font-size: 2.1mm; font-weight: 900; font-variant-numeric: tabular-nums; }}
+.marathon-copy {{ min-width: 0; }}
+.marathon-copy strong {{ display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #073e70; font-size: 2.15mm; }}
+.marathon-copy small {{ display: block; margin-top: .25mm; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #63717d; font-size: 1.6mm; }}
+.marathon-owner {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #004165; font-size: 1.9mm; font-weight: 700; }}
+.marathon-duration {{ color: #5a6670; font-size: 1.8mm; text-align: right; white-space: nowrap; }}
+.marathon-item.type-prepared_speech {{ border-left: 1.1mm solid #004165; }}
+.marathon-item.type-prepared_evaluation {{ border-left: 1.1mm solid #772432; background: #fffafb; }}
+.marathon-section.section-opening .marathon-item,
+.marathon-section.section-closing .marathon-item {{ min-height: 5.8mm; }}
+.paired-section {{ flex: 1; min-height: 0; }}
+.speech-pair-grid {{ flex: 1; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); grid-auto-rows: 1fr; gap: .55mm; padding: .6mm; }}
+.speech-pair {{ min-width: 0; display: grid; grid-template-columns: 7mm minmax(0,1.35fr) minmax(0,.9fr); gap: .7mm; align-items: stretch; padding: .7mm; border: .22mm solid #cbd8e1; border-radius: 1.2mm; background: #fff; }}
+.pair-number {{ display: grid; place-items: center; align-self: center; width: 5.5mm; height: 5.5mm; border-radius: 50%; background: #004165; color: #fff; font-size: 2.3mm; font-weight: 900; }}
+.pair-speech {{ min-width: 0; display: grid; grid-template-columns: auto 1fr auto; gap: .3mm .8mm; align-content: center; }}
+.pair-speech time {{ color: #004165; font-size: 1.9mm; font-weight: 900; font-variant-numeric: tabular-nums; }}
+.pair-speech strong {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #073e70; font-size: 2.4mm; }}
+.pair-speech small {{ grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #63717d; font-size: 1.9mm; }}
+.pair-speech span {{ color: #004165; font-size: 2mm; font-weight: 700; }}
+.pair-speech b {{ color: #5a6670; font-size: 1.9mm; text-align: right; }}
+.pair-evaluation {{ min-width: 0; display: grid; grid-template-columns: auto 1fr; gap: .25mm .6mm; align-content: center; padding-left: .8mm; border-left: .8mm solid #772432; background: #fffafb; }}
+.pair-evaluation time {{ color: #772432; font-size: 2mm; font-weight: 900; }}
+.pair-evaluation span {{ color: #772432; font-size: 1.85mm; }}
+.pair-evaluation strong {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #772432; font-size: 2mm; }}
+.pair-evaluation small {{ color: #6f5a60; font-size: 1.85mm; text-align: right; }}
+.pair-evaluation.missing {{ place-items: center; color: #8b949c; }}
+.speech-pair:last-child:nth-child(odd) {{ grid-column: 1 / -1; }}
+.layout-marathon .bottom-grid {{ gap: 0; border: .3mm solid #174f7f; background: #fff; }}
+.layout-marathon .bottom-grid .module {{ min-height: 0; border: 0; border-right: .22mm solid #aebfcb; border-radius: 0; padding: 1.4mm; font-size: 2mm; }}
+.layout-marathon .bottom-grid .module:last-child {{ border-right: 0; }}
+.layout-marathon .bottom-grid .module h2 {{ margin: -1.4mm -1.4mm 1mm; padding: .8mm 1.4mm; background: var(--theme-soft); border-bottom: .28mm solid #d6a329; color: #004165; font-size: 2.4mm; }}
+.layout-marathon.lang-zh .bottom-grid .timer-rules,
+.layout-marathon.lang-en .bottom-grid .timer-rules {{ grid-template-columns: repeat(3,minmax(0,1fr)); gap: 0; }}
+.layout-marathon.lang-zh .bottom-grid .timer-rule,
+.layout-marathon.lang-en .bottom-grid .timer-rule {{ padding: 0 .8mm; border-right: .18mm solid #d4dde3; border-bottom: 0; }}
+.layout-marathon.lang-zh .bottom-grid .timer-rule:last-child,
+.layout-marathon.lang-en .bottom-grid .timer-rule:last-child {{ border-right: 0; }}
+.layout-marathon .bottom-grid .officer-list {{ grid-template-columns: repeat(2,minmax(0,1fr)); gap: .3mm 1mm; }}
+.layout-marathon .bottom-grid .officer-list div {{ grid-template-columns: .9fr 1fr; }}
 @media print {{
   html, body {{ background: white; }}
   .page {{ margin: 0; min-height: 297mm; height: auto; overflow: visible; page-break-after: auto; break-after: auto; }}
@@ -2154,17 +2653,95 @@ def main() -> None:
     parser.add_argument("input_json", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("output"))
     parser.add_argument("--profile", type=Path, default=None)
+    parser.add_argument(
+        "--club-profile",
+        type=str,
+        default=None,
+        metavar="CLUB_NAME",
+        help="load or create the stable profile for this exact club name",
+    )
+    parser.add_argument(
+        "--update-club-profile",
+        action="store_true",
+        help="overwrite the stored club profile after successful validation",
+    )
+    parser.add_argument(
+        "--profile-root",
+        type=Path,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--save-profile",
+        type=Path,
+        default=None,
+        help="save confirmed reusable club facts for later meeting tasks",
+    )
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
+
+    if args.profile and args.club_profile:
+        parser.error("use either --profile or --club-profile, not both")
+    if args.update_club_profile and not args.club_profile:
+        parser.error("--update-club-profile requires --club-profile")
+    if args.profile_root and not args.club_profile:
+        parser.error("--profile-root requires --club-profile")
 
     input_path = args.input_json.expanduser().resolve()
     if not input_path.is_file():
         parser.error(f"input JSON does not exist: {input_path}")
+    stored_profile_path: Path | None = None
+    stored_profile_existed = False
     try:
         data = load_json(input_path)
         if args.profile:
             profile_path = args.profile.expanduser().resolve()
-            data = deep_merge(load_json(profile_path), data)
+            profile_data = resolve_profile_relative_paths(
+                load_json(profile_path), profile_path
+            )
+            data = deep_merge(profile_data, data)
+        elif args.club_profile:
+            profile_root = (
+                args.profile_root.expanduser().resolve()
+                if args.profile_root
+                else PROFILE_ROOT
+            )
+            stored_profile_path = stored_club_profile_path(
+                args.club_profile, profile_root=profile_root
+            )
+            stored_profile_existed = stored_profile_path.is_file()
+            if stored_profile_existed:
+                profile_data = resolve_profile_relative_paths(
+                    load_json(stored_profile_path), stored_profile_path
+                )
+                stored_name = profile_data.get("club", {}).get("name", "")
+                if normalized_club_name(stored_name) != normalized_club_name(
+                    args.club_profile
+                ):
+                    raise ValueError(
+                        "stored club profile identity does not match --club-profile"
+                    )
+                data = deep_merge(profile_data, data)
+                merged_name = data.get("club", {}).get("name", "")
+                if normalized_club_name(merged_name) != normalized_club_name(
+                    args.club_profile
+                ):
+                    raise ValueError(
+                        "input club.name does not match the stored --club-profile"
+                    )
+            else:
+                club_data = data.setdefault("club", {})
+                if not isinstance(club_data, dict):
+                    raise ValueError("club must be an object")
+                input_name = club_data.get("name")
+                if is_unresolved(input_name):
+                    club_data["name"] = args.club_profile
+                elif normalized_club_name(input_name) != normalized_club_name(
+                    args.club_profile
+                ):
+                    raise ValueError(
+                        "input club.name does not match --club-profile"
+                    )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"ok": False, "errors": [str(exc)]}, ensure_ascii=False, indent=2), file=sys.stderr)
         raise SystemExit(2)
@@ -2200,6 +2777,26 @@ def main() -> None:
     markdown_path.write_text(render_markdown(result), encoding="utf-8")
     html_path.write_text(render_html(result), encoding="utf-8")
 
+    saved_profile_path: Path | None = None
+    if args.save_profile:
+        saved_profile_path = args.save_profile.expanduser().resolve()
+        write_club_profile(
+            data,
+            saved_profile_path,
+            source_dir=input_path.parent,
+        )
+    if stored_profile_path and (
+        not stored_profile_existed or args.update_club_profile
+    ):
+        write_club_profile(
+            data,
+            stored_profile_path,
+            source_dir=input_path.parent,
+        )
+        saved_profile_path = stored_profile_path
+    elif stored_profile_path:
+        saved_profile_path = stored_profile_path
+
     print(
         json.dumps(
             {
@@ -2209,6 +2806,11 @@ def main() -> None:
                     "markdown": str(markdown_path),
                     "html": str(html_path),
                     "diagnostics": str(diagnostics_path),
+                    **(
+                        {"club_profile": str(saved_profile_path)}
+                        if saved_profile_path
+                        else {}
+                    ),
                 },
             },
             ensure_ascii=False,

@@ -2,7 +2,7 @@
 
 meeting JSON 是 Skill 内部的生成器输入，不是要求用户填写的表单。Skill 应先从当前消息、接龙和附件中主动识别已有事实，只询问无法判定的少量信息；旧会单为可选参考。
 
-meeting JSON 只保存“本期事实”。不要让模型填写派生的完整时间轴、开始时间、默认时长、转场或视觉样式；这些全部由生成器补齐。
+meeting JSON 只保存“本期事实”。不要让模型填写派生的完整时间轴、各行开始时间、默认时长、转场、CSS、尺寸或坐标；这些全部由生成器补齐。可以传递用户明确选择的语义版式、重点环节和主题方向。
 
 所有显式 `minutes`、`transition_after` 和 `approved_overtime_minutes` 都支持 0.5 分钟递增。输入 0.5 就按 30 秒计算，不通过修改其他环节补数。
 
@@ -11,9 +11,7 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
   "club": {
     "name": "Example Toastmasters Club",
     "default_location": "Meeting Room / Online",
-    "language": "zh",
-    "support_components": [],
-    "custom_support_blocks": []
+    "language": "zh"
   },
   "meeting": {
     "number": "236",
@@ -25,6 +23,9 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
     "word_of_day": "学习",
     "manager": "会议经理",
     "president": "会长姓名",
+    "layout": "auto",
+    "feature_item": null,
+    "visual_theme": "auto",
     "approved_overtime_minutes": 0
   },
   "roles": [],
@@ -39,13 +40,29 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 
 ## 1. 俱乐部
 
-- `name`：必填。
-- `default_location`：必填；本期 `meeting.location` 可覆盖。
-- `language`：`zh`、`en` 或 `bilingual`。
+- `name`：首次初始化或未加载 profile 时必填。
+- `default_location`：首次初始化或未加载 profile 时必填；本期 `meeting.location` 可覆盖。
+- `language`：`zh`、`en` 或 `bilingual`；首次初始化或未加载 profile 时必填。
 
-俱乐部首次初始化至少保存这三个身份字段，并记录用户选择的固定信息组件。上面的 `[]` 是一个有效示例，意思是“用户明确只要纯议程”；如果用户尚未选择，应删掉整个字段并先询问，不能擅自写 `[]`。
+生成器会先合并 profile，再做必填验证。因此使用 `--club-profile` 后，日常 meeting JSON 可以完全省略 `club`，只保留本期事实。
+
+俱乐部首次初始化至少保存这三个身份字段，并记录用户选择的固定信息组件。最小 JSON 故意省略 `support_components`，因为字段缺失表示“尚未选择，必须问”；`[]` 只能在用户明确只要纯议程时写入。
 
 旧会单可以帮助识别身份、当届官员和常用组件的候选值，但不能成为视觉样式或固定流程模板。只有用户确认后才保存；旧会单出现过某组件，不自动等于俱乐部的长期选择，任期官员也要确认仍为当届。
+
+### 跨新任务复用俱乐部信息
+
+生成器使用固定的本机资料库 `~/.toastmasters-agenda/profiles/`。文件名由“规范化后的俱乐部名称 + 短哈希”确定性生成，因此不依赖当前任务目录，也不会因同一工作目录有多个俱乐部而覆盖。俱乐部名称是身份主键；地点只能辅助提示，不能单独用于匹配。
+
+首次初始化并确认后，下面的命令会在生成成功后自动创建 profile：
+
+```bash
+python3 "$SKILL_DIR/scripts/build_agenda.py" meeting.json --club-profile "星河头马演讲俱乐部" --output-dir output
+```
+
+之后的新任务继续使用同一命令；生成器会在校验前加载 profile，meeting JSON 无需重复俱乐部稳定字段。如果当前资料库有多家俱乐部而用户未说名称，先只问“这是哪家俱乐部？”，不用地点自行猜测。
+
+profile 保存俱乐部名称、默认地点、语言、固定组件、当届官员、俱乐部介绍、入会信息、VPM 二维码和俱乐部自定义块；不保存本期角色、日期、时长、顺序或会议号。长期更新时，必须把新值写入 meeting JSON 的 `club.<field>`，再增加 `--update-club-profile`；例如长期默认地点改用 `club.default_location`，`meeting.location` 只表示本期地点。官方俱乐部名称变更时使用新名称创建新 profile。
 
 ### 固定信息组件
 
@@ -89,7 +106,7 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 }
 ```
 
-`club_intro` 和 `join_info` 可使用字符串数组。二维码路径可用绝对路径，或使用相对于本期 meeting JSON 的路径。生成器只嵌入用户原图；不从旧 PDF/截图裁切，不重绘或修复二维码。
+`club_intro` 和 `join_info` 可使用字符串数组。`club.vpm_qr_image` 和 `meeting.voting_qr_image` 都可用绝对路径，或使用相对于本期 meeting JSON 的路径。保存 profile 时，生成器会把 VPM 二维码原图复制到该 profile 的固定 `assets/` 目录，后续不再依赖首次任务或临时附件路径。本期投票二维码不进入 profile。生成器只嵌入用户原图；不从旧 PDF/截图裁切，不重绘或修复二维码。
 
 ### 自定义固定信息块
 
@@ -114,9 +131,9 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 
 - `id`、`title` 和至少一条 `lines` 必填；
 - 内容只按纯文本渲染，不接受 HTML；
-- `placement` 可为 `auto`、`left` 或 `bottom`，默认 `auto`；
+- `placement` 可为 `auto`、`left` 或 `bottom`，默认 `auto`。`left` 是兼容字段名，意思是“放入当前版式的侧边信息栏”；在 `feature` 中实际会显示在右侧。
 - `club.custom_support_blocks` 保存俱乐部常用块；`meeting.custom_support_blocks` 存在时完整覆盖俱乐部列表；
-- 排版器按内容体量自动填充左栏和底部；内容太多时由单页 A4 导出校验阻断。
+- 排版器按内容体量在当前版式的侧栏、横向条与底部之间装箱；具体位置见 [版式路由与主题视觉系统](visual-system.md)。内容太多时由单页 A4 导出校验阻断。
 
 ## 2. 本期会议
 
@@ -127,6 +144,10 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 - `location`：可省略，回退到俱乐部默认地点。
 - `theme`、`word_of_day`、`manager`：有则显示。
 - `president`：用于会长致辞与闭幕；不是长期俱乐部配置。
+- `layout`：`auto`、`standard`、`feature` 或 `marathon`。默认 `auto`；除非用户明确选择，不需要追问。
+- `feature_item`：可选的本期环节 ID，用于多个重点候选时指定主舞台，例如 `special:2` 或 `prepared_speech:1`。用户未指定时不需追问，生成器自动选时长最长者，同长选更早出现者。
+- `visual_theme`：`auto`、`general`、`learning`、`technology`、`wellness`、`voice`、`leadership` 或 `celebration`。默认优先从本期主题和今日一词识别。
+- `theme_image`：可选的 PNG/JPG/SVG/WebP 主题图路径。图中不得包含文字、Logo、人名、时间或二维码；相对路径以 meeting JSON 所在目录为基准。
 - `approved_overtime_minutes`：默认 `0`，支持 0.5 分钟递增。只有用户明确同意当前计算所需的准确分钟数后才能写入；内容变化后若超时分钟数不同，旧授权自动失效。
 - `support_components`：可选；本期需要改变俱乐部常用组合时覆盖 `club.support_components`。
 - `voting_qr_image`：选择 `voting_qr` 组件时必填。
@@ -198,7 +219,7 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 - `evaluator` 字段不存在：有即兴，但没有即兴点评。
 - `evaluator: null`：需要即兴点评，但点评人未定。
 - 数字时长代表用户明确锁定；`null` 或省略交给程序计算。
-- 即兴和即兴点评都未锁定时，程序在剩余时间内求整数解，使即兴点评约等于即兴演讲的一半，并让整场闭合。
+- 即兴和即兴点评都未锁定时，程序按 0.5 分钟步进在剩余时间内求解，使即兴点评约等于即兴演讲的一半，并让整场闭合；有等价解时优先整分钟。
 
 ## 6. 幕后团队
 
@@ -223,6 +244,7 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
       "title": "AI领航",
       "owner": "成员A",
       "minutes": 10,
+      "details": ["现场体验", "方法拆解", "动手实作"],
       "after": "guest_introduction"
     }
   ]
@@ -230,6 +252,7 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 ```
 
 - `title`、`owner`、`minutes` 必填。
+- `details` 可选，用字符串或字符串数组表达主题、形式或过程要点；进入 `feature` 版式时显示在专题舞台内。
 - `after` 可省略，默认放在嘉宾介绍之后。
 - 可用锚点包括 `guest_introduction`、`prepared_speech:1`、`table_topics`、`photo_break`、`prepared_evaluation:1`、`sharing` 等。
 

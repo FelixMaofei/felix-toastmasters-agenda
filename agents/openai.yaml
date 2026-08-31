@@ -1,6 +1,6 @@
 interface:
-  display_name: "Felix 头马会单 V2"
-  short_description: "角色接龙转成准确闭合的品牌会单"
+  display_name: "Felix 头马会单"
+  short_description: "把头马角色接龙转成时间闭合、可打印传播的一页品牌会单"
   brand_color: "#004165"
   default_prompt: "使用 $felix-toastmasters-agenda 把下面的角色接龙做成会单：先自己识别已有信息，缺什么再一次问我。"
 policy:
