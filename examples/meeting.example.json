@@ -9,6 +9,7 @@
       "meeting_boundaries",
       "officers"
     ],
+    "custom_support_blocks": [],
     "officers": [
       {"role": "President", "name": "成员B"},
       {"role": "VPE", "name": "成员K"},

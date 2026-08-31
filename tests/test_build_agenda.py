@@ -174,7 +174,7 @@ class AgendaBuilderTests(unittest.TestCase):
         _, errors, _ = BUILDER.build_agenda(data)
         self.assertTrue(any("no longer matches" in error for error in errors))
 
-    def test_dense_agenda_paginates_without_dropping_rows(self) -> None:
+    def test_dense_agenda_is_blocked_instead_of_crossing_a4_pages(self) -> None:
         data = example()
         data["meeting"]["end"] = "23:30"
         data["prepared_speeches"] = [
@@ -186,23 +186,20 @@ class AgendaBuilderTests(unittest.TestCase):
             for i in range(1, 13)
         ]
         result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
+        self.assertTrue(any("single-page A4 capacity exceeded" in error for error in errors))
         self.assertEqual(result["computed"]["row_count"], 41)
-        self.assertEqual(result["computed"]["page_count"], 3)
-        rendered = BUILDER.render_html(result)
-        self.assertIn('<meta name="agenda-page-count" content="3">', rendered)
-        self.assertIn("备稿点评 12", rendered)
-        self.assertEqual(rendered.count('class="page '), 3)
+        self.assertEqual(result["computed"]["page_count"], 1)
 
-    def test_recommended_support_components_create_second_page(self) -> None:
+    def test_recommended_support_components_stay_on_one_page(self) -> None:
         result, errors, _ = BUILDER.build_agenda(example())
         self.assertEqual(errors, [])
-        self.assertEqual(result["computed"]["page_count"], 2)
+        self.assertEqual(result["computed"]["page_count"], 1)
         rendered = BUILDER.render_html(result)
+        self.assertIn('<meta name="agenda-page-count" content="1">', rendered)
         self.assertIn("时间官规则", rendered)
         self.assertIn("当届官员团队", rendered)
         self.assertIn("四类禁忌", rendered)
-        self.assertEqual(rendered.count('class="page '), 2)
+        self.assertEqual(rendered.count('class="page '), 1)
 
     def test_empty_support_components_keep_agenda_only(self) -> None:
         data = example()
@@ -290,6 +287,50 @@ class AgendaBuilderTests(unittest.TestCase):
         data["club"]["vpm_qr_image"] = "missing.png"
         _, errors, _ = BUILDER.build_agenda(data, source_dir=ROOT / "examples")
         self.assertTrue(any("does not exist" in error for error in errors))
+
+    def test_custom_support_blocks_use_the_same_single_page_layout(self) -> None:
+        data = example()
+        data["club"]["support_components"] = []
+        data["club"]["custom_support_blocks"] = [
+            {
+                "id": "pathways",
+                "title": "Pathways 教育路径",
+                "lines": ["DL - 动态领导", "PM - 精通演讲", "<script>bad()</script>"],
+                "placement": "auto",
+            }
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(result["custom_support_blocks"][0]["id"], "pathways")
+        rendered = BUILDER.render_html(result)
+        self.assertIn("Pathways 教育路径", rendered)
+        self.assertIn("DL - 动态领导", rendered)
+        self.assertIn("&lt;script&gt;bad()&lt;/script&gt;", rendered)
+        self.assertNotIn("<script>bad()</script>", rendered)
+        self.assertIn("with-support", rendered)
+        self.assertIn('<meta name="agenda-page-count" content="1">', rendered)
+
+    def test_custom_support_blocks_validate_identity_content_and_placement(self) -> None:
+        data = example()
+        data["club"]["custom_support_blocks"] = [
+            {"id": "timer_rules", "title": "重复", "lines": ["内容"]},
+            {"id": "new", "title": "", "lines": [], "placement": "sideways"},
+        ]
+        _, errors, _ = BUILDER.build_agenda(data)
+        self.assertTrue(any("reserved custom support block id" in error for error in errors))
+        self.assertTrue(any("missing title" in error for error in errors))
+        self.assertTrue(any("has no content" in error for error in errors))
+        self.assertTrue(any("placement must be auto" in error for error in errors))
+
+    def test_meeting_custom_support_blocks_fully_override_club_blocks(self) -> None:
+        data = example()
+        data["club"]["custom_support_blocks"] = [
+            {"id": "usual", "title": "常用块", "lines": ["长期内容"]}
+        ]
+        data["meeting"]["custom_support_blocks"] = []
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(result["custom_support_blocks"], [])
 
     def test_half_minute_overtime_requires_exact_approval(self) -> None:
         data = example()

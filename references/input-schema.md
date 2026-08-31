@@ -12,7 +12,8 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
     "name": "Example Toastmasters Club",
     "default_location": "Meeting Room / Online",
     "language": "zh",
-    "support_components": []
+    "support_components": [],
+    "custom_support_blocks": []
   },
   "meeting": {
     "number": "236",
@@ -48,7 +49,7 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 
 ### 固定信息组件
 
-固定信息组件必须由用户选择，可以为空。字段缺失表示“尚未选择，必须问”；`[]` 表示“用户已明确不要信息附页”。
+固定信息组件必须由用户选择，可以为空。字段缺失表示“尚未选择，必须问”；`[]` 表示“用户已明确只要纯议程，不显示固定信息区”。
 
 取值顺序：
 
@@ -89,6 +90,33 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 ```
 
 `club_intro` 和 `join_info` 可使用字符串数组。二维码路径可用绝对路径，或使用相对于本期 meeting JSON 的路径。生成器只嵌入用户原图；不从旧 PDF/截图裁切，不重绘或修复二维码。
+
+### 自定义固定信息块
+
+用户需要内置列表外的信息时，使用 `custom_support_blocks`：
+
+```json
+{
+  "custom_support_blocks": [
+    {
+      "id": "pathways",
+      "title": "Pathways 教育路径",
+      "lines": [
+        "DL - 动态领导",
+        "PM - 精通演讲",
+        "VC - 愿景沟通"
+      ],
+      "placement": "auto"
+    }
+  ]
+}
+```
+
+- `id`、`title` 和至少一条 `lines` 必填；
+- 内容只按纯文本渲染，不接受 HTML；
+- `placement` 可为 `auto`、`left` 或 `bottom`，默认 `auto`；
+- `club.custom_support_blocks` 保存俱乐部常用块；`meeting.custom_support_blocks` 存在时完整覆盖俱乐部列表；
+- 排版器按内容体量自动填充左栏和底部；内容太多时由单页 A4 导出校验阻断。
 
 ## 2. 本期会议
 
@@ -255,3 +283,5 @@ python3 scripts/build_agenda.py meeting.json --output-dir output
 
 - 退出码 `0`：负责人完整、时间闭合，计算 JSON、Markdown 和 HTML 已生成。
 - 退出码 `2`：输入、负责人、角色关系或时间闭合失败；按错误修正或向用户确认。
+
+HTML 仍需经 `export_a4.py` 验证。只有实际 PDF 为 1 页 A4 竖版时才能交付；如果浏览器排版产生第 2 页，导出器会删除无效 PDF 并退出 `2`。

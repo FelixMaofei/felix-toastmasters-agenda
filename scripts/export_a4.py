@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export generated agenda HTML to verified A4 PDF pages and PNG assets."""
+"""Export generated agenda HTML to one verified A4 portrait PDF page and PNG."""
 
 from __future__ import annotations
 
@@ -47,8 +47,10 @@ def expected_page_count(html_path: Path) -> int:
     if not match:
         raise ValueError("agenda HTML is missing agenda-page-count metadata")
     count = int(match.group(1))
-    if count <= 0:
-        raise ValueError("agenda-page-count must be positive")
+    if count != 1:
+        raise ValueError(
+            f"final agenda must declare exactly 1 A4 page; HTML declares {count}"
+        )
     return count
 
 
@@ -68,22 +70,61 @@ def run_chrome(command: list[str], expected_file: Path, timeout: int = 25) -> in
 
 def page_count(pdf_path: Path) -> int | None:
     pdfinfo = shutil.which("pdfinfo")
-    if not pdfinfo:
+    if pdfinfo:
+        result = subprocess.run(
+            [pdfinfo, str(pdf_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("Pages:"):
+                try:
+                    return int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    break
+    try:
+        data = pdf_path.read_bytes()
+    except OSError:
         return None
-    result = subprocess.run(
-        [pdfinfo, str(pdf_path)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
+    fallback = len(re.findall(rb"/Type\s*/Page\b", data))
+    return fallback or None
+
+
+def page_size_points(pdf_path: Path) -> tuple[float, float] | None:
+    pdfinfo = shutil.which("pdfinfo")
+    if pdfinfo:
+        result = subprocess.run(
+            [pdfinfo, str(pdf_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        for line in result.stdout.splitlines():
+            match = re.match(
+                r"Page size:\s*([0-9.]+)\s*x\s*([0-9.]+)\s+pts",
+                line,
+            )
+            if match:
+                return float(match.group(1)), float(match.group(2))
+    try:
+        data = pdf_path.read_bytes()
+    except OSError:
+        return None
+    match = re.search(
+        rb"/MediaBox\s*\[\s*[-0-9.]+\s+[-0-9.]+\s+([-0-9.]+)\s+([-0-9.]+)\s*\]",
+        data,
     )
-    for line in result.stdout.splitlines():
-        if line.startswith("Pages:"):
-            try:
-                return int(line.split(":", 1)[1].strip())
-            except ValueError:
-                return None
-    return None
+    if not match:
+        return None
+    return float(match.group(1)), float(match.group(2))
+
+
+def is_a4_portrait(size: tuple[float, float]) -> bool:
+    width, height = size
+    return abs(width - 595.28) <= 3 and abs(height - 841.89) <= 3
 
 
 def main() -> None:
@@ -153,13 +194,37 @@ def main() -> None:
         raise SystemExit(2)
 
     pages = page_count(pdf_path)
-    if pages is not None and pages != expected_pages:
+    if pages != expected_pages:
+        if pdf_path.is_file():
+            pdf_path.unlink()
         print(
             json.dumps(
                 {
                     "ok": False,
                     "errors": [
-                        f"agenda HTML declares {expected_pages} pages but PDF contains {pages}"
+                        "final agenda content does not fit on one A4 page: "
+                        f"PDF contains {pages} pages. Reduce agenda rows or fixed-information "
+                        "components before exporting"
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    page_size = page_size_points(pdf_path)
+    if page_size is None or not is_a4_portrait(page_size):
+        if pdf_path.is_file():
+            pdf_path.unlink()
+        actual = "unknown" if page_size is None else f"{page_size[0]:.2f} x {page_size[1]:.2f} pt"
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "errors": [
+                        f"agenda PDF must be A4 portrait (595.28 x 841.89 pt); got {actual}"
                     ],
                 },
                 ensure_ascii=False,

@@ -396,6 +396,51 @@ def parse_support_components(value: Any, errors: list[str]) -> list[str]:
     return result
 
 
+def parse_custom_support_blocks(
+    value: Any, errors: list[str]
+) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        errors.append("custom_support_blocks must be an array")
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, row in enumerate(value, start=1):
+        if not isinstance(row, dict):
+            errors.append(f"custom_support_blocks[{index}] must be an object")
+            continue
+        block_id = str(row.get("id", "")).strip()
+        title = row.get("title")
+        lines = normalize_support_text(row.get("lines", row.get("content")))
+        placement = str(row.get("placement", "auto")).strip().lower()
+        if not block_id:
+            errors.append(f"custom_support_blocks[{index}] is missing id")
+            continue
+        if block_id in seen or block_id in SUPPORT_COMPONENTS:
+            errors.append(f"duplicate or reserved custom support block id: {block_id}")
+            continue
+        if is_unresolved(title):
+            errors.append(f"custom support block {block_id} is missing title")
+        if not lines:
+            errors.append(f"custom support block {block_id} has no content")
+        if placement not in {"auto", "left", "bottom"}:
+            errors.append(
+                f"custom support block {block_id} placement must be auto, left, or bottom"
+            )
+            placement = "auto"
+        seen.add(block_id)
+        result.append(
+            {
+                "id": block_id,
+                "title": "" if title is None else str(title).strip(),
+                "lines": lines,
+                "placement": placement,
+            }
+        )
+    return result
+
+
 def find_photographer(backstage: list[dict[str, Any]]) -> str | None:
     for row in backstage:
         token = f"{row.get('id', '')} {row.get('role', '')} {row.get('label', '')}".lower()
@@ -1157,6 +1202,16 @@ def build_agenda(
         meeting.get("support_components", club.get("support_components")),
         errors,
     )
+    custom_support_blocks = parse_custom_support_blocks(
+        meeting.get(
+            "custom_support_blocks",
+            club.get(
+                "custom_support_blocks",
+                normalized.get("custom_support_blocks"),
+            ),
+        ),
+        errors,
+    )
     officers = (
         parse_officers(club.get("officers"), errors)
         if "officers" in support_components
@@ -1291,9 +1346,13 @@ def build_agenda(
     effective_window = minutes_from_ticks(
         minute_ticks(declared_window) + minute_ticks(approved_overtime)
     )
-    page_item_limit = 20 if language == "bilingual" else 23
-    timeline_page_count = max(1, (len(items) + page_item_limit - 1) // page_item_limit)
-    estimated_page_count = timeline_page_count + (1 if support_components else 0)
+    page_item_limit = 30
+    if len(items) > page_item_limit:
+        errors.append(
+            f"single-page A4 capacity exceeded: {len(items)} agenda rows; "
+            f"reduce or combine content to {page_item_limit} rows or fewer"
+        )
+    estimated_page_count = 1
 
     computed = {
         "status": (
@@ -1350,6 +1409,7 @@ def build_agenda(
         "computed": computed,
         "warnings": warnings,
         "support_components": support_components,
+        "custom_support_blocks": custom_support_blocks,
         "_assets": {
             "vpm_qr_data_uri": vpm_qr_data,
             "voting_qr_data_uri": voting_qr_data,
@@ -1459,7 +1519,8 @@ def render_markdown(result: dict[str, Any]) -> str:
         )
         lines.extend(["", f"**{labels['backstage']}：** {backstage_text}"])
     support_components = result.get("support_components", [])
-    if support_components:
+    custom_support_blocks = result.get("custom_support_blocks", [])
+    if support_components or custom_support_blocks:
         lines.extend(
             [
                 "",
@@ -1542,14 +1603,23 @@ def render_markdown(result: dict[str, Any]) -> str:
         lines.extend(
             [
                 "",
-                f"- {localized('VPM 入会二维码：见会单附页。', 'VPM joining QR: see the support page.', language)}",
+                f"- {localized('VPM 入会二维码：见会单信息区。', 'VPM joining QR: see the agenda information area.', language)}",
             ]
         )
     if "voting_qr" in support_components:
         lines.extend(
             [
                 "",
-                f"- {localized('本期投票二维码：见会单附页。', 'Meeting voting QR: see the support page.', language)}",
+                f"- {localized('本期投票二维码：见会单信息区。', 'Meeting voting QR: see the agenda information area.', language)}",
+            ]
+        )
+    for block in custom_support_blocks:
+        lines.extend(
+            [
+                "",
+                f"### {block['title']}",
+                "",
+                *[f"- {line}" for line in block["lines"]],
             ]
         )
     return "\n".join(lines) + "\n"
@@ -1600,14 +1670,11 @@ def render_html(result: dict[str, Any]) -> str:
     language = club["language"]
     logo = image_data_uri(DEFAULT_LOGO)
     row_count = len(result["timeline"])
-    page_item_limit = 20 if language == "bilingual" else 23
-    timeline_pages = [
-        result["timeline"][index : index + page_item_limit]
-        for index in range(0, row_count, page_item_limit)
-    ] or [[]]
+    timeline_pages = [result["timeline"]]
     support_components = result.get("support_components", [])
-    max_page_rows = max(len(page) for page in timeline_pages)
-    density = "ultra" if max_page_rows >= 22 else "compact" if max_page_rows >= 18 else "normal"
+    custom_support_blocks = result.get("custom_support_blocks", [])
+    has_support = bool(support_components or custom_support_blocks)
+    density = "ultra" if row_count >= 22 else "compact" if row_count >= 18 else "normal"
 
     meta_parts = [
         str(meeting.get("date", "")).strip(),
@@ -1626,8 +1693,15 @@ def render_html(result: dict[str, Any]) -> str:
     word = html.escape(str(meeting.get("word_of_day", "")).strip())
     manager = html.escape(str(meeting.get("manager", "")).strip())
 
-    backstage = " · ".join(
+    backstage = "  |  ".join(
         f"{html.escape(row['label'])}：{html.escape(row['person'])}"
+        for row in result["backstage"]
+    )
+    backstage_rows = "".join(
+        "<div>"
+        f"<strong>{html.escape(row['label'])}</strong>"
+        f"<span>{html.escape(row['person'])}</span>"
+        "</div>"
         for row in result["backstage"]
     )
     if language == "en":
@@ -1654,6 +1728,11 @@ def render_html(result: dict[str, Any]) -> str:
         manager_label = "会议经理"
         table_headers = ("时间", "会议流程", "负责人", "时长")
     website = "toastmasters.org"
+    section_ranges: dict[str, dict[str, str]] = {}
+    for item in result["timeline"]:
+        section = item["section"]
+        section_ranges.setdefault(section, {"start": item["start"], "end": item["end"]})
+        section_ranges[section]["end"] = item["end"]
 
     def page_rows(page_items: list[dict[str, Any]]) -> str:
         rows: list[str] = []
@@ -1661,14 +1740,17 @@ def render_html(result: dict[str, Any]) -> str:
         for item in page_items:
             current_section = section_label(item["section"], language)
             if current_section != last_section:
+                time_range = section_ranges[item["section"]]
                 rows.append(
-                    f'<tr class="section-row"><td colspan="4">{html.escape(current_section)}</td></tr>'
+                    '<tr class="section-row"><td colspan="4">'
+                    f'<div>{html.escape(current_section)}<span>({html.escape(time_range["start"])}-{html.escape(time_range["end"])})</span></div>'
+                    "</td></tr>"
                 )
                 last_section = current_section
             details = " · ".join(html.escape(value) for value in item.get("details", []))
             detail_html = f'<div class="detail">{details}</div>' if details else ""
             rows.append(
-                "<tr>"
+                f'<tr class="item-row type-{html.escape(item["type"])}">'
                 f'<td class="time">{html.escape(item["start"])}</td>'
                 f'<td class="activity">{html.escape(item["label"])}{detail_html}</td>'
                 f'<td class="owner">{html.escape(item["owner"])}</td>'
@@ -1678,47 +1760,65 @@ def render_html(result: dict[str, Any]) -> str:
         return "".join(rows)
 
     page_blocks: list[str] = []
-    total_pages = len(timeline_pages) + (1 if support_components else 0)
+    total_pages = 1
     for page_index, page_items in enumerate(timeline_pages, start=1):
         page_marker = f"{page_index}/{total_pages}"
         sparse_class = " sparse-page" if len(page_items) < 12 else ""
+        mode_class = " with-support" if has_support else " no-support"
         page_blocks.append(
             f"""
-<main class="page {density} lang-{html.escape(language)}{sparse_class}">
-  <header class="hero">
+<main class="page {density} lang-{html.escape(language)}{sparse_class}{mode_class}">
+  <div class="brand-ribbon" aria-hidden="true"><span></span><span></span><span></span></div>
+  <header class="masthead">
     {"<img class='logo' src='" + logo + "' alt='Toastmasters International'>" if logo else "<div class='logo-fallback'>TOASTMASTERS<br>INTERNATIONAL</div>"}
-    <div>
-      <div class="club">{html.escape(club['name'])}</div>
+    <div class="title-block">
       <div class="kicker">{kicker}</div>
-      <div class="theme">{theme}</div>
-      <div class="meta">{meta}</div>
+      <h1>{html.escape(club['name'])} {html.escape(localized('例会议程', 'Meeting Agenda', language))}</h1>
+      <div class="theme-line"><span></span><strong>{theme or html.escape(localized('本期例会', 'Club Meeting', language))}</strong><span></span></div>
     </div>
   </header>
-  <div class="chips">
-    <div class="chip"><strong>{word_label}</strong> · {word or "—"}</div>
-    <div class="chip"><strong>{manager_label}</strong> · {manager or "—"}</div>
-  </div>
-  <section class="timeline">
-    <table>
-      <thead><tr><th>{table_headers[0]}</th><th>{table_headers[1]}</th><th>{table_headers[2]}</th><th>{table_headers[3]}</th></tr></thead>
-      <tbody>{page_rows(page_items)}</tbody>
-    </table>
+  <section class="meta-strip">
+    <div class="meta-cell"><b>{html.escape(localized('日期', 'Date', language))}</b><span>{html.escape(str(meeting.get('date', '')).strip()) or '-'}</span></div>
+    <div class="meta-cell"><b>{html.escape(localized('时间', 'Time', language))}</b><span>{computed['start']}-{computed['final_end']}</span></div>
+    <div class="meta-cell location-cell"><b>{html.escape(localized('地点', 'Location', language))}</b><span>{html.escape(str(meeting.get('location', '')).strip()) or '-'}</span></div>
+    <div class="meta-cell"><b>{word_label}</b><span class="word-value">{word or '-'}</span></div>
+    <div class="meta-cell"><b>{manager_label}</b><span>{manager or '-'}</span></div>
   </section>
+  <section class="backstage-strip"><strong>{backstage_label}</strong><span>{backstage or '-'}</span></section>
+  <section class="main-grid">
+    <aside class="left-rail">
+      <article class="module backstage-module">
+        <h2>{backstage_label}</h2>
+        <div class="backstage-list">{backstage_rows or '<div><span>-</span></div>'}</div>
+      </article>
+      <!-- LEFT_SUPPORT_SLOT -->
+    </aside>
+    <section class="timeline-panel">
+      <h2>{html.escape(localized('会议流程', 'Meeting Flow', language))}<span>{computed['start']}-{computed['final_end']}</span></h2>
+      <div class="timeline">
+        <table>
+          <thead><tr><th>{table_headers[0]}</th><th>{table_headers[1]}</th><th>{table_headers[2]}</th><th>{table_headers[3]}</th></tr></thead>
+          <tbody>{page_rows(page_items)}</tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+  <section class="bottom-grid"><!-- BOTTOM_SUPPORT_SLOT --></section>
   <footer class="footer">
-    <div class="backstage"><strong>{backstage_label}</strong> · {backstage or "—"}</div>
+    <div class="footer-club">{html.escape(club['name'])}</div>
     <div class="timecheck"><strong>{time_label}</strong> · {format_minutes(computed['item_minutes'])} + {format_minutes(computed['transition_minutes'])} = {format_minutes(computed['total_minutes'])} min</div>
     <div class="site">{website} · {page_marker}</div>
   </footer>
 </main>"""
         )
 
-    if support_components:
-        support_cards: list[str] = []
+    if has_support:
+        support_cards: dict[str, str] = {}
 
         def support_card(title: str, body: str, wide: bool = False) -> str:
             card_class = "support-card wide" if wide else "support-card"
             return (
-                f'<article class="{card_class}">'
+                f'<article class="module {card_class}">'
                 f'<h2>{html.escape(title)}</h2>{body}</article>'
             )
 
@@ -1729,40 +1829,27 @@ def render_html(result: dict[str, Any]) -> str:
                 timer_rows = []
                 for row in TIMER_RULES:
                     timer_rows.append(
-                        "<tr>"
-                        f"<td>{html.escape(localized(row['band_zh'], row['band_en'], language))}</td>"
-                        f"<td>{html.escape(localized(row['green_zh'], row['green_en'], language))}</td>"
-                        f"<td>{html.escape(localized(row['yellow_zh'], row['yellow_en'], language))}</td>"
-                        f"<td>{html.escape(localized(row['red_zh'], row['red_en'], language))}</td>"
-                        f"<td>{html.escape(localized(row['bell_zh'], row['bell_en'], language))}</td>"
-                        "</tr>"
+                        '<div class="timer-rule">'
+                        f"<strong>{html.escape(localized(row['band_zh'], row['band_en'], language))}</strong>"
+                        f'<span class="green">● {html.escape(localized(row["green_zh"], row["green_en"], language))}</span>'
+                        f'<span class="yellow">● {html.escape(localized(row["yellow_zh"], row["yellow_en"], language))}</span>'
+                        f'<span class="red">● {html.escape(localized(row["red_zh"], row["red_en"], language))}</span>'
+                        f"<small>{html.escape(localized(row['bell_zh'], row['bell_en'], language))}</small>"
+                        "</div>"
                     )
-                timer_body = (
-                    '<table class="timer-table"><thead><tr>'
-                    f"<th>{html.escape(localized('演讲时长', 'Speech length', language))}</th>"
-                    f"<th>{html.escape(localized('绿牌', 'Green', language))}</th>"
-                    f"<th>{html.escape(localized('黄牌', 'Yellow', language))}</th>"
-                    f"<th>{html.escape(localized('红牌', 'Red', language))}</th>"
-                    f"<th>{html.escape(localized('响铃', 'Bell', language))}</th>"
-                    f"</tr></thead><tbody>{''.join(timer_rows)}</tbody></table>"
-                )
-                support_cards.append(
-                    support_card(
-                        localized("时间官规则", "Timer Rules", language),
-                        timer_body,
-                        wide=True,
-                    )
+                timer_body = f'<div class="timer-rules">{"".join(timer_rows)}</div>'
+                support_cards[component] = support_card(
+                    localized("时间官规则", "Timer Rules", language),
+                    timer_body,
                 )
             elif component == "toastmasters_intro":
-                support_cards.append(
-                    support_card(
-                        localized(
-                            "头马国际演讲会",
-                            "Toastmasters International",
-                            language,
-                        ),
-                        f"<p>{html.escape(toastmasters_intro(language))}</p>",
-                    )
+                support_cards[component] = support_card(
+                    localized(
+                        "头马国际演讲会",
+                        "Toastmasters International",
+                        language,
+                    ),
+                    f"<p>{html.escape(toastmasters_intro(language))}</p>",
                 )
             elif component == "meeting_boundaries":
                 boundaries = [
@@ -1782,48 +1869,40 @@ def render_html(result: dict[str, Any]) -> str:
                         language,
                     ),
                 ]
-                support_cards.append(
-                    support_card(
-                        localized(
-                            "会议秩序与内容边界",
-                            "Meeting Conduct & Content Boundaries",
-                            language,
-                        ),
-                        "<ul>" + "".join(f"<li>{html.escape(line)}</li>" for line in boundaries) + "</ul>",
-                    )
+                support_cards[component] = support_card(
+                    localized(
+                        "会议秩序与内容边界",
+                        "Meeting Conduct & Content Boundaries",
+                        language,
+                    ),
+                    "<ul>" + "".join(f"<li>{html.escape(line)}</li>" for line in boundaries) + "</ul>",
                 )
             elif component == "officers":
                 officer_rows = "".join(
                     f"<div><strong>{html.escape(row['role'])}</strong><span>{html.escape(row['name'])}</span></div>"
                     for row in club["officers"]
                 )
-                support_cards.append(
-                    support_card(
-                        localized("当届官员团队", "Current Officer Team", language),
-                        f'<div class="officer-list">{officer_rows}</div>',
-                    )
+                support_cards[component] = support_card(
+                    localized("当届官员团队", "Current Officer Team", language),
+                    f'<div class="officer-list">{officer_rows}</div>',
                 )
             elif component == "club_intro":
-                support_cards.append(
-                    support_card(
-                        localized("俱乐部介绍", "About the Club", language),
-                        "<ul>"
-                        + "".join(
-                            f"<li>{html.escape(line)}</li>" for line in club["club_intro"]
-                        )
-                        + "</ul>",
+                support_cards[component] = support_card(
+                    localized("俱乐部介绍", "About the Club", language),
+                    "<ul>"
+                    + "".join(
+                        f"<li>{html.escape(line)}</li>" for line in club["club_intro"]
                     )
+                    + "</ul>",
                 )
             elif component == "join_info":
-                support_cards.append(
-                    support_card(
-                        localized("如何入会", "How to Join", language),
-                        "<ul>"
-                        + "".join(
-                            f"<li>{html.escape(line)}</li>" for line in club["join_info"]
-                        )
-                        + "</ul>",
+                support_cards[component] = support_card(
+                    localized("如何入会", "How to Join", language),
+                    "<ul>"
+                    + "".join(
+                        f"<li>{html.escape(line)}</li>" for line in club["join_info"]
                     )
+                    + "</ul>",
                 )
 
         qr_items: list[str] = []
@@ -1843,36 +1922,91 @@ def render_html(result: dict[str, Any]) -> str:
                 "</div>"
             )
         if qr_items:
-            support_cards.append(
-                support_card(
-                    localized("二维码", "QR Codes", language),
-                    f'<div class="qr-grid">{"".join(qr_items)}</div>',
-                    wide=True,
-                )
+            support_cards["qr_codes"] = support_card(
+                localized("二维码", "QR Codes", language),
+                f'<div class="qr-grid">{"".join(qr_items)}</div>',
+                wide=True,
             )
 
-        support_page_marker = f"{total_pages}/{total_pages}"
-        support_theme = localized("会单信息组件", "Agenda Information", language)
-        page_blocks.append(
-            f"""
-<main class="page support-page lang-{html.escape(language)}">
-  <header class="hero">
-    {"<img class='logo' src='" + logo + "' alt='Toastmasters International'>" if logo else "<div class='logo-fallback'>TOASTMASTERS<br>INTERNATIONAL</div>"}
-    <div>
-      <div class="club">{html.escape(club['name'])}</div>
-      <div class="kicker">{kicker}</div>
-      <div class="theme">{html.escape(support_theme)}</div>
-      <div class="meta">{meta}</div>
-    </div>
-  </header>
-  <section class="support-grid">{"".join(support_cards)}</section>
-  <footer class="footer support-footer">
-    <div><strong>{html.escape(localized('信息附页', 'Information Page', language))}</strong></div>
-    <div class="timecheck">{website}</div>
-    <div class="site">{support_page_marker}</div>
-  </footer>
-</main>"""
+        custom_placements: dict[str, str] = {}
+        custom_weights: dict[str, int] = {}
+        custom_keys: list[str] = []
+        for block in custom_support_blocks:
+            key = f"custom:{block['id']}"
+            support_cards[key] = support_card(
+                block["title"],
+                "<ul>"
+                + "".join(f"<li>{html.escape(line)}</li>" for line in block["lines"])
+                + "</ul>",
+            )
+            custom_placements[key] = block["placement"]
+            text_units = sum(len(line) for line in block["lines"]) // 55
+            custom_weights[key] = min(8, max(2, 1 + len(block["lines"]) + text_units))
+            custom_keys.append(key)
+
+        built_in_sequence = [
+            key
+            for key in (
+                "timer_rules",
+                "officers",
+                "toastmasters_intro",
+                "meeting_boundaries",
+                "club_intro",
+                "join_info",
+                "qr_codes",
+            )
+            if key in support_cards
+        ]
+        placement = {
+            "timer_rules": "left",
+            "officers": "left",
+            "toastmasters_intro": "auto",
+            "meeting_boundaries": "auto",
+            "club_intro": "bottom",
+            "join_info": "bottom",
+            "qr_codes": "bottom",
+            **custom_placements,
+        }
+        weight = {
+            "timer_rules": 6,
+            "officers": 5,
+            "toastmasters_intro": 3,
+            "meeting_boundaries": 4,
+            "club_intro": 3,
+            "join_info": 2,
+            "qr_codes": 5,
+            **custom_weights,
+        }
+        left_capacity = 23
+        left_weight = 3
+        left_keys: list[str] = []
+        bottom_keys: list[str] = []
+        for key in [*built_in_sequence, *custom_keys]:
+            preferred = placement.get(key, "auto")
+            if preferred == "left":
+                left_keys.append(key)
+                left_weight += weight.get(key, 3)
+            elif preferred == "bottom":
+                bottom_keys.append(key)
+            elif left_weight + weight.get(key, 3) <= left_capacity:
+                left_keys.append(key)
+                left_weight += weight.get(key, 3)
+            else:
+                bottom_keys.append(key)
+
+        left_html = "".join(support_cards[key] for key in left_keys)
+        bottom_html = "".join(support_cards[key] for key in bottom_keys)
+        bottom_count = len(bottom_keys)
+        page_blocks[0] = page_blocks[0].replace("<!-- LEFT_SUPPORT_SLOT -->", left_html)
+        page_blocks[0] = page_blocks[0].replace(
+            "<!-- BOTTOM_SUPPORT_SLOT -->", bottom_html
         )
+        page_blocks[0] = page_blocks[0].replace(
+            'class="bottom-grid"', f'class="bottom-grid count-{bottom_count}"'
+        )
+    else:
+        page_blocks[0] = page_blocks[0].replace("<!-- LEFT_SUPPORT_SLOT -->", "")
+        page_blocks[0] = page_blocks[0].replace("<!-- BOTTOM_SUPPORT_SLOT -->", "")
 
     return f"""<!doctype html>
 <html lang="{html.escape(language)}">
@@ -1885,70 +2019,128 @@ def render_html(result: dict[str, Any]) -> str:
 @page {{ size: A4 portrait; margin: 0; }}
 * {{ box-sizing: border-box; }}
 html, body {{ margin: 0; padding: 0; background: #e8edf0; color: #15344a; font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif; }}
-.page {{ width: 210mm; height: 297mm; margin: 0 auto; overflow: hidden; background: #fffdf8; padding: 9mm 10mm 7mm; display: flex; flex-direction: column; }}
-.page + .page {{ margin-top: 8mm; }}
-.hero {{ background: #004165; color: white; border-radius: 6mm; padding: 6mm 7mm 5mm; display: grid; grid-template-columns: 26mm 1fr; gap: 6mm; align-items: center; border-bottom: 2mm solid #F2DF74; }}
-.logo {{ width: 24mm; height: 24mm; object-fit: contain; }}
-.logo-fallback {{ width: 24mm; height: 24mm; border: .4mm solid rgba(255,255,255,.65); border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 9px; text-align: center; }}
-.club {{ font-size: 5.7mm; font-weight: 800; line-height: 1.08; letter-spacing: .1mm; }}
-.kicker {{ margin-top: 1.5mm; color: #F2DF74; font-size: 3.8mm; font-weight: 800; }}
-.theme {{ margin-top: 1.2mm; font-size: 7.2mm; font-weight: 900; color: #fff; line-height: 1.05; }}
-.meta {{ margin-top: 2mm; font-size: 3.1mm; color: rgba(255,255,255,.92); }}
-.chips {{ display: flex; gap: 3mm; margin: 3mm 0; }}
-.chip {{ flex: 1; border: .35mm solid #d3dadd; border-radius: 99mm; padding: 1.6mm 3mm; font-size: 3mm; background: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-.chip strong {{ color: #772432; }}
-.timeline {{ flex: 1; min-height: 0; border: .4mm solid #d5dde1; border-radius: 3mm; overflow: hidden; background: white; }}
+.page {{ position: relative; width: 210mm; min-height: 297mm; height: auto; margin: 0 auto; overflow: visible; background: #fff; color: #092f50; padding: 5mm 6mm 4mm; display: flex; flex-direction: column; }}
+.logo {{ object-fit: contain; }}
+.logo-fallback {{ width: 18mm; height: 18mm; border: .35mm solid #004165; color: #004165; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 7px; text-align: center; }}
+.kicker {{ margin-top: 1mm; color: #F2DF74; font-size: 3.1mm; font-weight: 800; }}
+.timeline {{ flex: 1; min-height: 0; border: .35mm solid #d5dde1; border-radius: 2mm; overflow: visible; background: white; }}
 table {{ width: 100%; height: 100%; border-collapse: collapse; table-layout: fixed; }}
 .sparse-page table {{ height: auto; }}
-thead th {{ background: #772432; color: white; font-size: 3mm; padding: 1.5mm 1.6mm; text-align: left; }}
+thead th {{ background: #772432; color: white; font-size: 2.6mm; padding: 1.1mm 1.2mm; text-align: left; }}
 thead th:nth-child(1) {{ width: 20mm; }}
 thead th:nth-child(3) {{ width: 32mm; }}
 thead th:nth-child(4) {{ width: 18mm; text-align: right; }}
-tbody td {{ border-bottom: .25mm solid #dfe5e8; padding: 1.25mm 1.6mm; font-size: 2.8mm; line-height: 1.15; vertical-align: middle; }}
+tbody td {{ border-bottom: .22mm solid #dfe5e8; padding: .9mm 1.2mm; font-size: 2.5mm; line-height: 1.12; vertical-align: middle; }}
 tbody tr:last-child td {{ border-bottom: 0; }}
-.section-row td {{ background: #eaf1f4; color: #004165; font-weight: 900; padding: 1mm 1.6mm; font-size: 2.75mm; letter-spacing: .2mm; }}
+.section-row td {{ background: #eaf1f4; color: #004165; font-weight: 900; padding: .7mm 1.2mm; font-size: 2.3mm; letter-spacing: .15mm; }}
 .time {{ color: #b17b00; font-weight: 900; }}
 .activity {{ font-weight: 750; }}
-.detail {{ margin-top: .45mm; color: #62727d; font-size: 2.25mm; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.detail {{ margin-top: .3mm; color: #62727d; font-size: 1.95mm; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 .owner {{ color: #004165; font-weight: 700; }}
 .duration {{ text-align: right; color: #5a6670; white-space: nowrap; }}
-.footer {{ margin-top: 3mm; background: #004165; color: white; border-radius: 3mm; padding: 2.2mm 3mm; display: grid; grid-template-columns: minmax(0,1.7fr) minmax(0,1fr) auto; gap: 3mm; align-items: center; font-size: 2.6mm; }}
+.footer {{ margin-top: 2mm; background: #004165; color: white; border-radius: 2mm; padding: 1.8mm 2.4mm; display: grid; grid-template-columns: minmax(0,1.7fr) minmax(0,1fr) auto; gap: 2mm; align-items: center; font-size: 2.3mm; }}
 .footer strong {{ color: #F2DF74; }}
 .backstage {{ white-space: normal; overflow: visible; line-height: 1.18; }}
 .timecheck {{ white-space: nowrap; }}
 .site {{ color: #F2DF74; font-weight: 800; }}
-.lang-bilingual .footer {{ font-size: 2.2mm; }}
-.compact tbody td {{ padding-top: 1mm; padding-bottom: 1mm; font-size: 2.55mm; }}
-.compact .section-row td {{ padding-top: .8mm; padding-bottom: .8mm; font-size: 2.5mm; }}
-.compact .detail {{ font-size: 2.05mm; }}
-.ultra tbody td {{ padding-top: .72mm; padding-bottom: .72mm; font-size: 2.35mm; }}
-.ultra .section-row td {{ padding-top: .62mm; padding-bottom: .62mm; font-size: 2.3mm; }}
-.ultra .detail {{ font-size: 1.9mm; }}
-.support-grid {{ flex: 1; min-height: 0; margin-top: 3mm; display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; align-content: start; }}
-.support-card {{ border: .35mm solid #d5dde1; border-radius: 3mm; background: white; padding: 3mm; font-size: 2.55mm; line-height: 1.35; }}
-.support-card.wide {{ grid-column: 1 / -1; }}
-.support-card h2 {{ margin: 0 0 1.6mm; color: #772432; font-size: 3.5mm; line-height: 1.15; }}
+.lang-bilingual .footer {{ font-size: 1.95mm; }}
+.support-card {{ border: .25mm solid #d5dde1; border-radius: 1.5mm; background: white; padding: 1.7mm; font-size: 2.1mm; line-height: 1.22; }}
+.support-card h2 {{ margin: 0 0 .8mm; color: #772432; font-size: 2.8mm; line-height: 1.1; }}
 .support-card p {{ margin: 0; }}
-.support-card ul {{ margin: 0; padding-left: 4.5mm; }}
-.support-card li + li {{ margin-top: .8mm; }}
-.support-page table {{ height: auto; }}
-.timer-table th, .timer-table td {{ width: auto !important; padding: 1.2mm; border: .25mm solid #dfe5e8; font-size: 2.35mm; text-align: left; }}
-.timer-table th {{ background: #004165; color: white; }}
-.officer-list {{ display: grid; gap: .7mm; }}
-.officer-list div {{ display: grid; grid-template-columns: 1fr 1.2fr; gap: 2mm; padding-bottom: .5mm; border-bottom: .2mm solid #e5eaed; }}
+.support-card ul {{ margin: 0; padding-left: 3.2mm; }}
+.support-card li + li {{ margin-top: .35mm; }}
+.timer-rules {{ display: grid; gap: .7mm; }}
+.timer-rule {{ display: grid; gap: .2mm; padding-bottom: .55mm; border-bottom: .18mm solid #e5eaed; }}
+.timer-rule:last-child {{ padding-bottom: 0; border-bottom: 0; }}
+.timer-rule strong {{ color: #004165; }}
+.timer-rule span, .timer-rule small {{ font-size: 1.85mm; }}
+.timer-rule .green {{ color: #18764a; }}
+.timer-rule .yellow {{ color: #a56f00; }}
+.timer-rule .red {{ color: #a12832; }}
+.timer-rule small {{ color: #5a6670; }}
+.officer-list {{ display: grid; gap: .35mm; }}
+.officer-list div {{ display: grid; grid-template-columns: 1fr 1.05fr; gap: 1mm; padding-bottom: .3mm; border-bottom: .15mm solid #e5eaed; }}
 .officer-list div:last-child {{ border-bottom: 0; }}
 .officer-list span {{ color: #004165; font-weight: 700; }}
-.qr-grid {{ display: flex; justify-content: center; gap: 12mm; }}
-.qr-item {{ display: grid; justify-items: center; gap: 1.2mm; color: #004165; }}
-.qr-item img {{ width: 30mm; height: 30mm; object-fit: contain; image-rendering: auto; }}
-.support-footer {{ margin-top: 3mm; }}
-.lang-bilingual .support-card {{ font-size: 2.25mm; }}
-.lang-bilingual .support-card h2 {{ font-size: 3.1mm; }}
+.qr-grid {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); justify-items: center; gap: 1.5mm; }}
+.qr-item {{ display: grid; justify-items: center; gap: .6mm; color: #004165; text-align: center; }}
+.qr-item img {{ width: 23mm; height: 23mm; object-fit: contain; image-rendering: auto; }}
+.lang-bilingual .support-card {{ font-size: 1.8mm; }}
+.lang-bilingual .support-card h2 {{ font-size: 2.4mm; }}
+
+/* A4 editorial agenda layout: brand masthead, operational rail, primary timeline. */
+.brand-ribbon {{ height: 3mm; display: grid; grid-template-columns: 34mm 24mm 26mm 1fr; gap: 2mm; margin: -5mm -6mm 1.5mm; overflow: hidden; }}
+.brand-ribbon span:nth-child(1), .brand-ribbon span:nth-child(4) {{ background: #004165; }}
+.brand-ribbon span:nth-child(2) {{ background: #f2c94c; transform: skewX(-35deg); }}
+.brand-ribbon span:nth-child(3) {{ background: #a6192e; transform: skewX(-35deg); }}
+.masthead {{ position: relative; min-height: 31mm; display: grid; grid-template-columns: 33mm 1fr; gap: 5mm; align-items: center; padding: 1mm 5mm 2.5mm; overflow: hidden; border-bottom: .45mm solid #c89524; }}
+.masthead::before {{ content: ""; position: absolute; left: -30mm; top: -31mm; width: 95mm; height: 54mm; border: 2.2mm solid #004165; border-radius: 50%; opacity: .9; pointer-events: none; }}
+.masthead .logo {{ position: relative; z-index: 1; width: 29mm; height: 29mm; }}
+.title-block {{ position: relative; z-index: 1; min-width: 0; text-align: center; }}
+.title-block .kicker {{ margin: 0 0 .8mm; color: #9b6a00; font-size: 2.6mm; letter-spacing: .35mm; }}
+.title-block h1 {{ margin: 0; color: #07366a; font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; font-size: 7.2mm; font-weight: 800; line-height: 1.05; letter-spacing: .05mm; text-wrap: balance; }}
+.theme-line {{ margin-top: 1.8mm; display: grid; grid-template-columns: minmax(15mm,1fr) auto minmax(15mm,1fr); gap: 3mm; align-items: center; color: #b47b00; font-size: 4.2mm; }}
+.theme-line span {{ height: .35mm; background: #c89524; }}
+.theme-line strong {{ max-width: 105mm; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.meta-strip {{ display: grid; grid-template-columns: 1fr 1fr 1.45fr 1fr 1fr; border-top: .35mm solid #d5a42e; border-bottom: .35mm solid #d5a42e; margin: 2.3mm 0; }}
+.meta-cell {{ min-width: 0; min-height: 13mm; padding: 1.6mm 2.2mm; display: grid; align-content: center; gap: .8mm; border-right: .22mm solid #8aa0b5; font-size: 2.35mm; }}
+.meta-cell:last-child {{ border-right: 0; }}
+.meta-cell b {{ color: #07366a; font-size: 2.4mm; }}
+.meta-cell span {{ color: #1d2730; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.meta-cell .word-value {{ color: #b47b00; font-size: 3.8mm; font-weight: 800; }}
+.main-grid {{ flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(51mm,.31fr) minmax(0,.69fr); gap: 2.4mm; align-items: stretch; }}
+.backstage-strip {{ display: none; min-height: 8mm; margin-bottom: 1.8mm; padding: 1.4mm 2mm; border: .3mm solid #174f7f; border-left: 2mm solid #d6a329; align-items: center; gap: 3mm; font-size: 2.25mm; }}
+.backstage-strip strong {{ color: #004165; }}
+.no-support .backstage-strip {{ display: flex; }}
+.no-support .main-grid {{ grid-template-columns: minmax(0,1fr); }}
+.no-support .left-rail {{ display: none; }}
+.left-rail {{ min-width: 0; display: flex; flex-direction: column; gap: 1.7mm; }}
+.module {{ border: .3mm solid #174f7f; border-radius: 1.2mm; background: #fff; padding: 1.5mm; font-size: 2.05mm; line-height: 1.24; overflow: hidden; }}
+.module h2 {{ margin: -1.5mm -1.5mm 1.2mm; padding: 1mm 1.5mm; background: #004165; border-bottom: .5mm solid #d6a329; color: white; font-size: 2.8mm; line-height: 1.05; letter-spacing: .08mm; }}
+.backstage-list {{ display: grid; }}
+.backstage-list > div {{ min-height: 5.6mm; display: grid; grid-template-columns: 1.2fr 1fr; align-items: center; gap: 1mm; padding: .7mm .5mm; border-bottom: .18mm solid #c9d5df; }}
+.backstage-list > div:last-child {{ border-bottom: 0; }}
+.backstage-list strong {{ color: #0b3f6b; }}
+.timeline-panel {{ min-width: 0; display: flex; flex-direction: column; border: .32mm solid #174f7f; border-radius: 1.2mm; overflow: hidden; background: white; }}
+.timeline-panel > h2 {{ margin: 0; min-height: 7mm; display: flex; justify-content: space-between; align-items: center; gap: 3mm; padding: 1.2mm 2mm; background: #004165; border-bottom: .5mm solid #d6a329; color: white; font-size: 3.2mm; }}
+.timeline-panel > h2 span {{ color: #f2df74; font-size: 2.3mm; font-variant-numeric: tabular-nums; }}
+.timeline {{ flex: 1; border: 0; border-radius: 0; }}
+.timeline table {{ height: 100%; }}
+.timeline thead th {{ background: #073e70; color: white; padding: .8mm 1mm; font-size: 2.2mm; }}
+.timeline thead th:nth-child(1) {{ width: 18mm; }}
+.timeline thead th:nth-child(3) {{ width: 28mm; }}
+.timeline thead th:nth-child(4) {{ width: 15mm; }}
+.timeline tbody td {{ padding: .55mm 1mm; font-size: 2.05mm; line-height: 1.06; }}
+.timeline .section-row td {{ padding: .7mm 1mm; background: #edf4f8; color: #073e70; font-size: 2.35mm; text-align: center; }}
+.timeline .section-row td > div {{ display: flex; justify-content: center; align-items: baseline; gap: 1.2mm; }}
+.timeline .section-row span {{ font-size: 2mm; font-weight: 700; }}
+.timeline .detail {{ font-size: 1.65mm; }}
+.timeline .type-special .activity,
+.timeline .type-special .owner,
+.timeline .type-special .duration {{ color: #772432; font-weight: 800; }}
+.timer-rules {{ gap: .8mm; }}
+.timer-rule {{ padding: .25mm .4mm .65mm; }}
+.timer-rule strong {{ font-size: 2.2mm; }}
+.timer-rule span, .timer-rule small {{ font-size: 1.9mm; }}
+.officer-list div {{ min-height: 4mm; align-items: center; font-size: 1.95mm; }}
+.qr-item img {{ width: 19mm; height: 19mm; }}
+.bottom-grid {{ margin-top: 1.8mm; display: grid; grid-template-columns: repeat(auto-fit,minmax(40mm,1fr)); gap: 1.8mm; }}
+.bottom-grid:empty {{ display: none; }}
+.bottom-grid.count-1 {{ grid-template-columns: 1fr; }}
+.bottom-grid.count-2 {{ grid-template-columns: repeat(2,minmax(0,1fr)); }}
+.bottom-grid.count-3 {{ grid-template-columns: repeat(3,minmax(0,1fr)); }}
+.bottom-grid.count-4 {{ grid-template-columns: repeat(4,minmax(0,1fr)); }}
+.bottom-grid .module {{ min-height: 18mm; font-size: 1.95mm; }}
+.bottom-grid .module h2 {{ font-size: 2.55mm; }}
+.footer {{ margin-top: 1.8mm; min-height: 10mm; border-radius: 0; padding: 1.8mm 3mm; background: #003b70; border-bottom: 1.1mm solid #c89524; font-size: 2.25mm; }}
+.footer-club {{ color: #f2df74; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-weight: 800; font-size: 3mm; }}
+.lang-bilingual .title-block h1 {{ font-size: 6.2mm; }}
+.lang-bilingual .meta-cell {{ font-size: 1.95mm; }}
+.lang-bilingual .timeline tbody td {{ font-size: 1.75mm; }}
+.lang-bilingual .module {{ font-size: 1.75mm; }}
 @media print {{
   html, body {{ background: white; }}
-  .page {{ margin: 0; page-break-after: always; break-after: page; }}
-  .page + .page {{ margin-top: 0; }}
-  .page:last-child {{ page-break-after: auto; break-after: auto; }}
+  .page {{ margin: 0; min-height: 297mm; height: auto; overflow: visible; page-break-after: auto; break-after: auto; }}
 }}
 </style>
 </head>
