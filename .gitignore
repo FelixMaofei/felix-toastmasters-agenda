@@ -1,12 +1,4 @@
-.DS_Store
-__MACOSX/
+.test-output/
 __pycache__/
 *.pyc
-.env
-.env.*
-data/
-member-info.xlsx
-*.key
-*.pem
-credentials.json
-auth.json
+.DS_Store

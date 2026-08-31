@@ -1,0 +1,45 @@
+{
+  "club": {
+    "name": "示例头马演讲俱乐部",
+    "default_location": "示例会议室",
+    "language": "zh"
+  },
+  "meeting": {
+    "number": "236",
+    "date": "2026-07-08",
+    "start": "19:30",
+    "end": "21:30",
+    "theme": "长脑子特辑",
+    "word_of_day": "学习",
+    "manager": "成员A",
+    "president": "成员B",
+    "approved_overtime_minutes": 0
+  },
+  "roles": [
+    {"id": "rules_host", "person": "成员C"},
+    {"id": "toastmaster", "person": "成员D"},
+    {"id": "timer", "person": "成员C"},
+    {"id": "ah_counter", "person": "成员E"},
+    {"id": "grammarian", "person": "成员D"},
+    {"id": "guest_host", "person": "成员F"},
+    {"id": "sharing_host", "person": "成员C"},
+    {"id": "general_evaluator", "person": "成员G"},
+    {"id": "awards_host", "person": "成员F"}
+  ],
+  "prepared_speeches": [
+    {"speaker": "成员B", "title": "如何深度工作", "evaluator": "成员E"},
+    {"speaker": "成员C", "title": "孤独", "evaluator": "成员F"},
+    {"speaker": "成员G", "title": "AI的记忆系统", "evaluator": "成员I"}
+  ],
+  "impromptu": {
+    "host": "成员H",
+    "evaluator": "成员B"
+  },
+  "backstage": [
+    {"id": "photographer", "person": "成员J", "label": "拍照官"},
+    {"id": "slides", "person": "成员B", "label": "场控/PPT"},
+    {"id": "voting", "person": "成员E", "label": "投票链接"}
+  ],
+  "special_segments": [],
+  "standard_overrides": []
+}

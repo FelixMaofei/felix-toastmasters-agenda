@@ -1,7 +1,7 @@
 interface:
-  display_name: "明源云头马会单"
-  short_description: "快速确认文字流程并生成A4会单图"
+  display_name: "Felix 头马会单 V2"
+  short_description: "角色接龙转成准确闭合的品牌会单"
   brand_color: "#004165"
-  default_prompt: "Use $mingyuan-toastmasters-agenda to parse this role-signup relay, quickly confirm the complete Markdown flow with me, then generate one accurate A4 agenda image and stop when I approve it."
+  default_prompt: "使用 $felix-toastmasters-agenda 把我提供的本期角色接龙制作成时间闭合、符合 Toastmasters 品牌规范的会单。"
 policy:
   allow_implicit_invocation: true

@@ -1,115 +1,116 @@
 ---
-name: mingyuan-toastmasters-agenda
-description: Create Mingyuan Yun Toastmasters meeting agenda sheets and visuals from Chinese role-signup text, including role parsing, missing-info checks, time planning, GPT Image visual generation, text QA, and HTML/PDF fallback. Use when the user asks for 会单, 例会议程, 角色接龙转会单, 明源云头马会单, Toastmasters agenda, meeting manager agenda output, or a polished agenda image/PDF for Mingyuan Yun Toastmasters Club.
+name: felix-toastmasters-agenda
+description: 将 Toastmasters 角色接龙、会议说明或旧会单参考，转成内容准确、时间闭合、符合官方品牌规范的中英双语会单。适用于各俱乐部的例会议程、角色接龙转会单、Toastmasters agenda、时间重算、A4 打印版和线上分享版；不复刻各俱乐部旧样式。
 ---
 
-# Mingyuan Toastmasters Agenda
+# Felix Toastmasters Agenda V2
 
-## Purpose
+## 核心价值
 
-Turn a Mingyuan Yun Toastmasters role signup into a confirmed, visually usable agenda sheet. Treat this as an operations deliverable, not a text-only answer.
+> **继承稳定内容，识别本期变化，自动完成加减计算，让整场会议重新闭合。**
 
-## Default Fast Path
+这里的“稳定内容”是 Toastmasters 共通规则，以及俱乐部名称、默认地点和语言；不是要求用户每期重新上传上一期会单，也不是照抄某家俱乐部的旧版式。
 
-Use this sequence unless the user explicitly asks for a different workflow:
+## 任务边界
 
-1. The user sends the role-signup relay text.
-2. Parse it immediately and discuss only the missing facts that materially change the flow.
-3. Recalculate the complete timeline and show one full Markdown content draft.
-4. Lock the text flow with the user before doing visual work.
-5. Generate one final-quality GPT Image agenda in A4 portrait ratio.
-6. Check the image against the locked text. Once the user chooses a version, save that exact image and stop.
+- 内容准确和时间闭合优先于视觉创意。
+- 统一使用 Toastmasters 品牌色、官方标识和清晰的 A4 信息设计，不还原不同俱乐部的历史样式。
+- 最终文字、HTML、PDF 和分享图必须来自同一份计算后 JSON；不要让图片模型重新抄写密集文字。
+- 用户只要提供本期接龙和变化。旧会单只在首次初始化时用于提取并确认俱乐部名称、默认地点和语言。
+- 姓名已经填进本期接龙，就代表本期承诺；不要再次审问是否本人同意。
 
-The two approval gates are:
+## 默认工作流
 
-- **Gate 1 - text flow:** roles, sequence, durations, timestamps, backstage people, fixed content, and current officers are confirmed.
-- **Gate 2 - chosen image:** The user says a version is good, final, adopted, or “就这样”. That exact version becomes the deliverable; do not keep polishing it autonomously.
+1. 读取本期角色接龙、会议基本信息和特殊环节，保留接龙中的先后顺序。
+2. 区分：
+   - 标准环节；
+   - 角色触发环节；
+   - 本期明确增加的特殊环节；
+   - 只显示在幕后团队、不进入时间轴的幕后角色。
+3. 一次性询问真正影响成品的缺失信息。通常只包括：
+   - 会议日期、起止时间或地点确实未知；
+   - 标准环节的负责人未知；
+   - 接龙中已有角色但姓名为空、🌺、待定或招募中；
+   - 特殊环节缺少时长或位置；
+   - 同一角色在宣言和报告中出现不同姓名。
+4. 普通例会只需读取 [输入结构](references/input-schema.md)，生成只包含本期事实的 meeting JSON。不要让模型重写完整时间轴、开始时间和转场。只有本期规则冲突、特殊会议或生成器错误无法理解时，才读取 [会单业务与时间规则](references/agenda-rules.md)。
+5. Skill 被加载时会显示 Base directory。将它作为 `SKILL_DIR`，用绝对路径运行确定性生成器，不要假设当前目录就是 Skill，也不要手算最终时间：
 
-## Conversation Speed Rules
+   ```bash
+   python3 "$SKILL_DIR/scripts/build_agenda.py" meeting.json --output-dir output
+   ```
 
-- Stay on the meeting flow first. Do not research templates, member data, future automation, or file organization before the flow is clear unless one of those facts is genuinely required to calculate the agenda.
-- Ask the smallest useful set of questions in one compact batch. Typical material questions are: optional segments, guest-introduction retention, special-segment duration and position, impromptu duration, evaluation duration, and unresolved functionaries.
-- Treat role completeness and role consent as separate checks. A person is confirmed only when they appear in the signup relay for that role, or the user explicitly says the person has agreed/been confirmed. A tentative instruction such as “先写某某” does not prove that person volunteered; ask one short confirmation question before Gate 1.
-- `嘉宾介绍主持/负责人` and `真情分享主持/负责人` are independent signup roles. Never infer either one from 事务官、会议经理、时间官、总主持、会长 or another role.
-- When the relay is incomplete, list the unresolved roles and ask before producing the confirmed timeline. Do not silently make someone兼任. The only standing owner default is that closing remarks use the same person as the president speech.
-- When the user says “你看看还能给多少”, calculate and recommend a usable duration instead of returning the decision to them.
-- Apply established time and location defaults silently. Default guest-introduction duration does not supply its host; default sharing duration does not supply its facilitator.
-- Preserve explicit strings literally. For example, `拍照官：电视机` means the person/value is exactly `电视机`; never reinterpret it as blank or pending.
-- If the meeting has no prepared speeches, Ah-counter, or AI lead, remove those segments cleanly instead of forcing the standard flow.
-- After any insertion, deletion, reorder, or duration change, recalculate every downstream timestamp. Never patch only one row.
-- Once Gate 1 is reached, stop discussing possibilities and move directly to the image.
+6. 生成器会输出：
+   - `agenda.computed.json`：唯一内容真源；
+   - `agenda.md`：用户确认文字；
+   - `agenda.html`：符合 Toastmasters 品牌规范的单文件 A4 会单。
+7. 如果生成器报告超时、未闭合、缺负责人或角色冲突，先解决问题，不得绕过检查制作最终成品。
+8. 先展示 `agenda.md`，取得文字确认后再导出 PDF/PNG。用户明确选定后停止继续改版。
 
-## Workflow
+文字确认后，使用同一 HTML 导出打印和分享文件：
 
-1. Parse the role signup and meeting basics.
-   - Extract issue number, theme, 今日一词, roles, backstage roles, workshop/speech items, hosts, evaluators, meeting manager, and closing speaker.
-   - Mark `🌺`, blanks, ambiguous names, missing speech titles, or missing optional segments as unresolved.
-   - For member nickname/full-name matching and Pathways suggestions, optionally read `data/member-info.xlsx` relative to this Skill, sheet `会员信息`. This package does not include member data. If the workbook is absent or the match is uncertain, ask the user instead of searching online or inventing a result.
-   - Read `references/meeting-rules.md` when exact parsing, default content, or timing rules are needed.
-   - Preserve signup status separately from actual execution. If someone fills a role on site without having signed up, record `现场临时承担（非接龙报名）`; do not rewrite history as if they volunteered in the relay.
+```bash
+python3 "$SKILL_DIR/scripts/export_a4.py" output/agenda.html --output-dir output
+```
 
-2. Fill the time plan before designing.
-   - Use Asia/Shanghai dates.
-   - Default meeting time is `19:30-21:30`; default entry time is `19:00`.
-   - Default location is `金地威新中心A座 6F 洱海会议室`. Preserve the exact room name `洱海`; do not normalize it to `沿海`.
-   - If the user gives enough constraints, make a reasonable plan. If a major required duration is missing, ask only the smallest necessary question.
-   - Recalculate the whole timeline after any insertion, deletion, reorder, or duration change. Validate item order, every segment duration, and the declared end time together.
-   - Never emit a negative residual duration or silently compress a locked segment. If the plan cannot close by `21:30`, show the conflict and proposed tradeoff for confirmation.
-   - Before final visual output, show the complete Markdown content truth and get Gate 1 confirmation. A direct instruction such as “继续做会单” after the open points are resolved counts as approval to proceed.
+## 执行纪律
 
-3. Generate the agenda content.
-   - Include basic info, backstage roles, agenda timeline, timekeeper rules, officer team, Pathways, guest participation, reminders, Toastmasters intro, and club intro.
-   - Do not duplicate a separate role list when all台前 roles already appear in the timeline.
-   - Keep WeChat copy as plain text if the user asks for chat-ready text; use Markdown only for docs.
-   - The confirmed Markdown draft is the canonical content truth for image generation. It must contain every visible field that the final agenda needs.
+- `scripts/build_agenda.py` 和 `scripts/export_a4.py` 是确定性程序，普通任务直接运行。
+- **不要阅读、复述或分析 Python 源码，不要读取测试文件。**只有命令出现 Python traceback、无法执行或输出结构损坏时，才检查对应脚本。
+- 不要在运行程序之前或之后手算整场时间，也不要用模型自己的计算覆盖 `agenda.computed.json`。
+- 程序退出码为 `0` 时，直接读取 `agenda.md` 和诊断摘要；不要为了“再确认一次”展开全部源码。
+- 程序退出码为 `2` 时，只根据错误里的缺失项、超时或未闭合分钟数处理；不要猜测修复。
+- 默认不搜索历史任务、旧会单、会员库或网络。当前输入足够时走最短路径。
 
-4. Produce a stable agenda visual.
-   - Once the content is confirmed and a strong visual reference is available, use GPT Image directly for the first final-quality agenda visual. Treat dense Chinese text rendering as an empirical QA question: if the current image model has already passed a real agenda test, do not reject this route based only on generic assumptions.
-   - Read `references/image-generation-workflow.md` before generating the image.
-   - Use `assets/agenda-reference-good.png` as the stable information-design reference and `assets/agenda-a4-health-reference.png` as an A4 health-theme reference. Both are style references only; never copy their meeting-specific text.
-   - Give image generation both: (a) an approved visual reference and (b) an A4 content-truth image containing every exact field. A verified HTML-rendered agenda PNG is useful as the content-truth reference.
-   - Use A4 portrait ratio `210:297` (about `0.707`) as the default final canvas. Explicitly reject `2:3`, phone-long-screenshot, and extra-narrow poster proportions in the prompt.
-   - Do not attach a tall event poster directly as a visual reference when it can pull the output into a narrow ratio. Translate its theme into words or a compact palette/mood reference instead.
-   - Generate exactly one version first. Do not silently spray variants or run repeated correction generations after the user has seen or approved a version.
-   - Compare every visible name, timestamp, duration, role, address, fixed-content line, section number, and officer row against the confirmed content before treating it as final.
-   - Keep deterministic HTML/CSS as the editable backup and correction fallback. Start from `assets/agenda-template.html` when image generation fails text QA, when exact small corrections are needed, or when the user explicitly asks for an editable layout.
-   - Use `assets/toastmasters-transparent.png` only when a cleaner official logo asset is not available locally.
-   - Export a PNG for sharing and a PDF for printing when the user asks for a final agenda file.
-   - Prefer an A4 portrait image for both sharing and printing. A nearby ratio is acceptable only when the user explicitly approves that exact version.
-   - Generate print PDF as single-page A4 portrait (`210mm x 297mm`) with `scripts/make_a4_print_pdf.py`. Do not rely on browser default print settings, which may produce Letter size or split into multiple pages.
+## 标准环节
 
-5. QA before treating the result as final.
-   - Open or inspect the exported PNG.
-   - Check no content is cut off, including bottom modules and footer.
-   - Check the location against the current meeting input. Without an override, it must read `金地威新中心A座 6F 洱海会议室`; reject accidental `沿海` or stale `太湖` text.
-   - Check PDF page size and page count: A4 portrait, exactly 1 page for a one-page agenda.
-   - Check text does not overflow, collide, or sit awkwardly inside cards.
-   - Check logo is integrated into the header, not pasted in a white box.
-   - Check there is no fake logo such as a decorative `TM` mark.
-   - Check whitespace is intentional: dense but orderly, not large dead blanks.
-   - Check body typography has breathing room: avoid making every line heavy/bold.
-   - Check the chosen image against the current officer list; reject stale officer rows and accidental extra `IPP` rows.
-   - Check club-introduction labels are correct: `定位`, `使命`, `愿景`, and `关键词` must not be swapped or duplicated.
-   - Check section numbering has no duplicated digits such as `1 1 幕后人员`.
-   - Check the final aspect ratio is A4-like and not visibly narrow.
-   - If the user has already selected a version despite a known imperfection, their explicit selection wins. Save that exact version, note the choice briefly, and stop.
+以下环节默认存在，只有本期明确取消时才在 `standard_overrides` 中设置 `enabled: false`：
 
-## Visual Direction
+- 规则介绍；
+- 会长致辞；
+- 总主持开场；
+- 嘉宾介绍；
+- 合影／中场休息／茶歇；
+- 真情分享；
+- 颁奖；
+- 闭幕致辞。
 
-For Mingyuan Yun agendas, prefer a formal Toastmasters event-poster language:
+会长致辞和闭幕默认同一位会长。嘉宾介绍和真情分享没有负责人时集中询问。合影/休息的负责人优先使用本期拍照官；拍照官仍属于幕后角色，不会自行创造台前环节。
 
-- Brand colors: Toastmasters loyal blue `#004165`, maroon `#772432`, gold/yellow `#F2DF74`, cool gray `#A9B2B1`.
-- Layout: A4 portrait agenda; strong branded masthead; meta row; main timeline as the visual center; supporting modules below and/or left.
-- Logo: integrate as a lockup in the masthead. Avoid white sticker boxes unless the supplied brand asset requires a plate.
-- Typography: use a display face only for the main title and key theme; use readable sans for tables. Do not make all table text bold.
-- Density: agenda sheets are allowed to be dense. Use hierarchy and grid rhythm instead of oversized decorative whitespace.
-- Footer: use club name, slogan, and values. Do not invent a logo or fake monogram.
+## 接龙触发规则
 
-## Output Contract
+- 角色行存在且姓名完整：生成对应环节。
+- 角色行存在但姓名未定：环节保留，负责人待补。
+- 整条角色没有出现：不生成该角色对应的宣言或报告。
+- 时间官、哼哈官、语法官分别触发“宣言/介绍 + 报告”，两处姓名必须一致。
+- 备稿演讲和备稿点评按编号对应。默认需要点评；接龙明确没有点评时，在本期事实中设置 `evaluation_enabled: false`。不要用“漏写 evaluator 字段”代表取消。
+- 即兴点评时长与即兴演讲联动，通常约为即兴演讲时长的一半，不能固定写死。
+- 场控、打印、签到、直播、投票链接等幕后角色只进入幕后团队。
 
-When the first image is generated, show only that image. After the user approves a version:
+## 时间与超时
 
-- Copy that exact generated file into the user's chosen issue/output folder with a clear `最终采用` filename.
-- Do not replace it with a later “improved” generation unless the user explicitly requests another version.
-- Keep HTML as an editable backup only when it was created.
-- Create a single-page A4 PDF only when the user asks for a print file or the delivery explicitly requires one.
+- 默认正式例会为 120 分钟；用户明确给出其他时间窗时，以本期时间窗为准。
+- 转场必须参与计算。大多数主要环节后默认 1 分钟；规则介绍、会长致辞以及中场休息之后默认不加转场。
+- 即兴演讲、即兴点评、中场休息和真情分享是联动弹性区，不设置即兴演讲的硬范围。
+- 程序自动调整休息和真情分享时只在实用范围内变化；用户明确锁定的本期时长可以超出该自动范围。
+- 计算结果超出结束时间时，必须告诉用户超出多少分钟，并请用户决定延长或删减；不得偷偷延长、压缩或修改已确认内容。
+- 任意插入、删除、换序或改时长后，重新运行生成器，重算后续全部时间点。
+
+## 视觉与交付
+
+- 使用确定性 HTML，而不是图片模型排密集文字。
+- 默认 A4 竖版，Toastmasters 忠诚蓝 `#004165`、栗红 `#772432`、金色 `#F2DF74`、冷灰 `#A9B2B1`。
+- 内容放不进一页时自动分页并重复页眉与表头；绝不能为了“单页成功”裁掉后半段议程。
+- 中文、英文和中英双语共用同一信息结构，只切换标签语言。
+- HTML 是打印与线上传播的共同来源。普通例会通常为单页；超长例会输出多页 A4 PDF 和逐页 PNG。
+- 最终文件不得包含提示词、内部判断、缺失项说明、历史会单文字或制作过程备注。
+
+## 不要做
+
+- 不要求用户每期重新提供旧会单。
+- 不为每个俱乐部保存多套流程模板。
+- 不复刻旧会单视觉风格。
+- 不把接龙里没有的角色型环节擅自补回。
+- 不把拍照官、场控等幕后角色直接当成台前环节。
+- 不让模型手算后跳过程序验证。
+- 不在超时状态下输出“最终版”。
