@@ -62,5 +62,6 @@
     {"id": "voting", "person": "成员E", "label": "投票链接"}
   ],
   "special_segments": [],
-  "standard_overrides": []
+  "standard_overrides": [],
+  "transition_overrides": []
 }

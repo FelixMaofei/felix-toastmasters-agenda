@@ -4,6 +4,8 @@ meeting JSON 是 Skill 内部的生成器输入，不是要求用户填写的表
 
 meeting JSON 只保存“本期事实”。不要让模型填写派生的完整时间轴、开始时间、默认时长、转场或视觉样式；这些全部由生成器补齐。
 
+所有显式 `minutes`、`transition_after` 和 `approved_overtime_minutes` 都支持 0.5 分钟递增。输入 0.5 就按 30 秒计算，不通过修改其他环节补数。
+
 ```json
 {
   "club": {
@@ -29,7 +31,8 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
   "impromptu": null,
   "backstage": [],
   "special_segments": [],
-  "standard_overrides": []
+  "standard_overrides": [],
+  "transition_overrides": []
 }
 ```
 
@@ -91,12 +94,12 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 
 - `number`：期数或本期标签。
 - `date`：`YYYY-MM-DD`。
-- `start`：`HH:MM`。
-- `end`：可省略；省略时默认从开始时间起 120 分钟。
+- `start`：`HH:MM`；半分钟节点可用 `HH:MM:30`。
+- `end`：可省略；省略时默认从开始时间起 120 分钟，也支持 `HH:MM:30`。
 - `location`：可省略，回退到俱乐部默认地点。
 - `theme`、`word_of_day`、`manager`：有则显示。
 - `president`：用于会长致辞与闭幕；不是长期俱乐部配置。
-- `approved_overtime_minutes`：默认 `0`。只有用户明确同意当前计算所需的准确分钟数后才能写入；内容变化后若超时分钟数不同，旧授权自动失效。
+- `approved_overtime_minutes`：默认 `0`，支持 0.5 分钟递增。只有用户明确同意当前计算所需的准确分钟数后才能写入；内容变化后若超时分钟数不同，旧授权自动失效。
 - `support_components`：可选；本期需要改变俱乐部常用组合时覆盖 `club.support_components`。
 - `voting_qr_image`：选择 `voting_qr` 组件时必填。
 
@@ -221,9 +224,30 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 - `minutes`：锁定本期时长；
 - `owner`：覆盖默认负责人；
 - `label`：覆盖显示名称；
-- `transition_after`：覆盖默认转场分钟数。
+- `transition_after`：覆盖默认转场分钟数，可使用 `0.5`。
 
-## 9. 输出与退出码
+## 9. 任意环节转场覆盖
+
+备稿点评、即兴点评、时间官/哼哈官/语法官报告等角色触发环节不属于 `standard_overrides`。需要单独调整它们的转场时，使用：
+
+```json
+{
+  "transition_overrides": [
+    {"id": "prepared_evaluation:1", "minutes": 0.5},
+    {"id": "table_topics_evaluation", "minutes": 0.5},
+    {"id": "timer_report", "minutes": 0.5}
+  ]
+}
+```
+
+- `id` 必须是本期已生成的环节 ID；
+- 备稿演讲/点评使用 `prepared_speech:1`、`prepared_evaluation:1` 等编号 ID；
+- 即兴与即兴点评使用 `table_topics`、`table_topics_evaluation`；
+- 官员报告使用 `timer_report`、`ah_counter_report`、`grammarian_report`；
+- `minutes` 支持 `0`、`0.5`、`1` 等 0.5 分钟递增；
+- 同一环节不要同时在两处覆盖转场。
+
+## 10. 输出与退出码
 
 ```bash
 python3 scripts/build_agenda.py meeting.json --output-dir output

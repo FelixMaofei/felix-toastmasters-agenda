@@ -29,6 +29,12 @@ class AgendaBuilderTests(unittest.TestCase):
         durations = {row["type"]: row["duration"] for row in result["timeline"]}
         self.assertEqual(durations["table_topics_evaluation"], durations["table_topics"] / 2)
         self.assertEqual(durations["president_closing"], 2)
+        auto_durations = [
+            row["duration"]
+            for row in result["timeline"]
+            if row.get("computed_flexible")
+        ]
+        self.assertTrue(all(isinstance(value, int) for value in auto_durations))
 
     def test_role_absence_removes_triggered_sections(self) -> None:
         data = example()
@@ -284,6 +290,163 @@ class AgendaBuilderTests(unittest.TestCase):
         data["club"]["vpm_qr_image"] = "missing.png"
         _, errors, _ = BUILDER.build_agenda(data, source_dir=ROOT / "examples")
         self.assertTrue(any("does not exist" in error for error in errors))
+
+    def test_half_minute_overtime_requires_exact_approval(self) -> None:
+        data = example()
+        data["impromptu"]["minutes"] = 14
+        data["impromptu"]["evaluation_minutes"] = 7
+        data["standard_overrides"] = [
+            {"id": "photo_break", "minutes": 4},
+            {"id": "sharing", "minutes": 6},
+        ]
+        data["special_segments"] = [
+            {
+                "title": "额外工作坊",
+                "owner": "成员K",
+                "minutes": 10.5,
+                "after": "guest_introduction",
+            }
+        ]
+        data["meeting"]["approved_overtime_minutes"] = 11.5
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(result["computed"]["delta_minutes"], 11.5)
+        self.assertEqual(result["computed"]["final_end"], "21:41:30")
+        self.assertEqual(result["computed"]["status"], "exact_with_approved_overtime")
+
+        data["meeting"]["approved_overtime_minutes"] = 11
+        _, mismatch_errors, _ = BUILDER.build_agenda(data)
+        self.assertTrue(
+            any("approve exactly 11.5 minutes" in error for error in mismatch_errors)
+        )
+
+    def test_half_minute_start_defaults_across_midnight(self) -> None:
+        data = example()
+        data["meeting"]["start"] = "23:30:30"
+        del data["meeting"]["end"]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(result["computed"]["declared_end"], "01:30:30")
+        self.assertEqual(result["computed"]["final_end"], "01:30:30")
+
+    def test_half_minute_transitions_accumulate_without_removing_others(self) -> None:
+        data = example()
+        data["standard_overrides"] = [
+            {"id": "guest_introduction", "transition_after": 0.5},
+            {"id": "awards", "transition_after": 0.5},
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(result["computed"]["transition_minutes"], 18)
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+        guest_index = next(
+            index
+            for index, row in enumerate(result["timeline"])
+            if row["type"] == "guest_introduction"
+        )
+        self.assertEqual(result["timeline"][guest_index]["transition_after"], 0.5)
+        self.assertTrue(result["timeline"][guest_index + 1]["start"].endswith(":30"))
+
+    def test_role_triggered_items_accept_individual_transition_overrides(self) -> None:
+        data = example()
+        data["transition_overrides"] = [
+            {"id": "prepared_evaluation:1", "minutes": 0.5},
+            {"id": "table_topics_evaluation", "minutes": 0.5},
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        by_id = {row["id"]: row for row in result["timeline"]}
+        self.assertEqual(by_id["prepared_evaluation:1"]["transition_after"], 0.5)
+        self.assertEqual(by_id["table_topics_evaluation"]["transition_after"], 0.5)
+        self.assertEqual(result["computed"]["transition_minutes"], 18)
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+
+    def test_auto_evaluation_does_not_absorb_an_unrelated_time_gap(self) -> None:
+        data = example()
+        data["impromptu"]["minutes"] = 10
+        data["standard_overrides"] = [
+            {"id": "photo_break", "minutes": 5},
+            {"id": "sharing", "minutes": 6},
+        ]
+        data["transition_overrides"] = [
+            {"id": "prepared_evaluation:1", "minutes": 0.5},
+            {"id": "prepared_evaluation:2", "minutes": 0.5},
+            {"id": "prepared_evaluation:3", "minutes": 0.5},
+            {"id": "table_topics_evaluation", "minutes": 0.5},
+            {"id": "grammarian_report", "minutes": 0.5},
+            {"id": "ah_counter_report", "minutes": 0.5},
+            {"id": "timer_report", "minutes": 0.5},
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(result["computed"]["delta_minutes"], -8.5)
+        self.assertTrue(any("8.5 unexplained minutes" in error for error in errors))
+        evaluation = next(
+            row
+            for row in result["timeline"]
+            if row["type"] == "table_topics_evaluation"
+        )
+        self.assertEqual(evaluation["duration"], 5)
+
+    def test_transition_override_rejects_missing_or_duplicate_targets(self) -> None:
+        missing = example()
+        missing["transition_overrides"] = [
+            {"id": "not-a-real-item", "minutes": 0.5}
+        ]
+        _, missing_errors, _ = BUILDER.build_agenda(missing)
+        self.assertTrue(any("references missing item" in error for error in missing_errors))
+
+        duplicate = example()
+        duplicate["standard_overrides"] = [
+            {"id": "guest_introduction", "transition_after": 0.5}
+        ]
+        duplicate["transition_overrides"] = [
+            {"id": "guest_introduction", "minutes": 0.5}
+        ]
+        _, duplicate_errors, _ = BUILDER.build_agenda(duplicate)
+        self.assertTrue(any("defined twice" in error for error in duplicate_errors))
+
+    def test_all_explicit_time_fields_accept_half_minute_increments(self) -> None:
+        data = example()
+        data["standard_overrides"] = [
+            {"id": "guest_introduction", "minutes": 4.5, "transition_after": 0.5}
+        ]
+        data["prepared_speeches"][0]["minutes"] = 6.5
+        data["prepared_speeches"][0]["evaluation_minutes"] = 2.5
+        data["impromptu"]["minutes"] = 10.5
+        data["impromptu"]["evaluation_minutes"] = 5.5
+        data["special_segments"] = [
+            {
+                "title": "30秒提醒",
+                "owner": "成员K",
+                "minutes": 0.5,
+                "after": "guest_introduction",
+                "transition_after": 0.5,
+            }
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+        first_speech = next(
+            row for row in result["timeline"] if row["id"] == "prepared_speech:1"
+        )
+        self.assertEqual(first_speech["duration"], 6.5)
+        markdown = BUILDER.render_markdown(result)
+        rendered = BUILDER.render_html(result)
+        self.assertIn("6.5 min", markdown)
+        self.assertIn("0.5 min", rendered)
+        self.assertNotIn("2.0 min", rendered)
+
+    def test_invalid_half_minute_values_are_rejected(self) -> None:
+        for invalid in (0.25, True, "0.5", -0.5, float("nan"), float("inf")):
+            with self.subTest(invalid=invalid):
+                data = example()
+                data["standard_overrides"] = [
+                    {"id": "guest_introduction", "transition_after": invalid}
+                ]
+                _, errors, _ = BUILDER.build_agenda(data)
+                self.assertTrue(
+                    any("0.5-minute increments" in error for error in errors)
+                )
 
 
 if __name__ == "__main__":

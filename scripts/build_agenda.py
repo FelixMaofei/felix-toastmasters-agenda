@@ -7,6 +7,7 @@ import argparse
 import base64
 import html
 import json
+import math
 import re
 import sys
 from copy import deepcopy
@@ -104,6 +105,7 @@ FLEX_BOUNDS = {
     "photo_break": (1, 15),
     "sharing": (1, 20),
 }
+AUTO_EVALUATION_MAX_DEVIATION = 2
 
 CORE_OFFICER_ALIASES = {
     "president": {"president", "会长", "主席"},
@@ -218,31 +220,61 @@ def is_unresolved(value: Any) -> bool:
     return text.lower() in UNRESOLVED or text in UNRESOLVED or "{{" in text or "}}" in text
 
 
-def positive_int(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+def half_minute_value(value: Any, *, allow_zero: bool) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return value
-
-
-def nonnegative_int(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
         return None
-    return value
+    if not math.isfinite(number):
+        return None
+    ticks = round(number * 2)
+    if abs(number * 2 - ticks) > 1e-9:
+        return None
+    if ticks < 0 or (ticks == 0 and not allow_zero):
+        return None
+    return ticks // 2 if ticks % 2 == 0 else ticks / 2
 
 
-def parse_clock(value: Any) -> int:
-    match = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", str(value))
+def positive_minutes(value: Any) -> int | float | None:
+    return half_minute_value(value, allow_zero=False)
+
+
+def nonnegative_minutes(value: Any) -> int | float | None:
+    return half_minute_value(value, allow_zero=True)
+
+
+def minute_ticks(value: int | float) -> int:
+    return round(float(value) * 2)
+
+
+def minutes_from_ticks(ticks: int) -> int | float:
+    return ticks // 2 if ticks % 2 == 0 else ticks / 2
+
+
+def format_minutes(value: int | float) -> str:
+    return str(minutes_from_ticks(minute_ticks(value)))
+
+
+def parse_clock(value: Any) -> int | float:
+    match = re.fullmatch(r"\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*", str(value))
     if not match:
-        raise ValueError(f"invalid clock time {value!r}; use HH:MM")
-    hour, minute = map(int, match.groups())
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"invalid clock time {value!r}; use HH:MM or HH:MM:30")
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    second = int(match.group(3) or 0)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and second in {0, 30}):
         raise ValueError(f"invalid clock time {value!r}")
-    return hour * 60 + minute
+    return minutes_from_ticks((hour * 60 + minute) * 2 + second // 30)
 
 
-def format_clock(value: int) -> str:
-    value %= 24 * 60
-    return f"{value // 60:02d}:{value % 60:02d}"
+def format_clock(value: int | float) -> str:
+    ticks = minute_ticks(value) % (24 * 60 * 2)
+    whole_minutes, half_tick = divmod(ticks, 2)
+    hour, minute = divmod(whole_minutes, 60)
+    suffix = ":30" if half_tick else ""
+    return f"{hour:02d}:{minute:02d}{suffix}"
 
 
 def display_label(item_type: str, language: str, override: Any = None) -> str:
@@ -382,11 +414,11 @@ def make_item(
     *,
     item_id: str | None = None,
     label: Any = None,
-    duration: int | None = None,
+    duration: int | float | None = None,
     locked: bool = True,
-    preferred: int | None = None,
+    preferred: int | float | None = None,
     details: Any = None,
-    transition_after: int | None = None,
+    transition_after: int | float | None = None,
     owner_required: bool = True,
     source: str = "generated",
 ) -> dict[str, Any]:
@@ -480,14 +512,82 @@ def parse_overrides(data: Any, errors: list[str]) -> dict[str, dict[str, Any]]:
         if item_id in result:
             errors.append(f"duplicate standard override: {item_id}")
             continue
+        normalized = deepcopy(row)
         if "enabled" in row and not isinstance(row["enabled"], bool):
             errors.append(f"standard override {item_id} enabled must be a boolean")
-        if "minutes" in row and positive_int(row["minutes"]) is None:
-            errors.append(f"standard override {item_id} minutes must be a positive integer")
-        if "transition_after" in row and nonnegative_int(row["transition_after"]) is None:
-            errors.append(f"standard override {item_id} transition_after must be a nonnegative integer")
-        result[item_id] = deepcopy(row)
+        if "minutes" in row:
+            minutes = positive_minutes(row["minutes"])
+            if minutes is None:
+                errors.append(
+                    f"standard override {item_id} minutes must be positive in 0.5-minute increments"
+                )
+                normalized.pop("minutes", None)
+            else:
+                normalized["minutes"] = minutes
+        if "transition_after" in row:
+            transition = nonnegative_minutes(row["transition_after"])
+            if transition is None:
+                errors.append(
+                    f"standard override {item_id} transition_after must be nonnegative "
+                    "in 0.5-minute increments"
+                )
+                normalized.pop("transition_after", None)
+            else:
+                normalized["transition_after"] = transition
+        result[item_id] = normalized
     return result
+
+
+def parse_transition_overrides(
+    data: Any, errors: list[str]
+) -> dict[str, int | float]:
+    if data is None:
+        return {}
+    if not isinstance(data, list):
+        errors.append("transition_overrides must be an array")
+        return {}
+    result: dict[str, int | float] = {}
+    for index, row in enumerate(data, start=1):
+        if not isinstance(row, dict):
+            errors.append(f"transition_overrides[{index}] must be an object")
+            continue
+        item_id = str(row.get("id", "")).strip()
+        if not item_id:
+            errors.append(f"transition_overrides[{index}] is missing id")
+            continue
+        if item_id in result:
+            errors.append(f"duplicate transition override: {item_id}")
+            continue
+        minutes = nonnegative_minutes(row.get("minutes"))
+        if minutes is None:
+            errors.append(
+                f"transition override {item_id} minutes must be nonnegative "
+                "in 0.5-minute increments"
+            )
+            continue
+        result[item_id] = minutes
+    return result
+
+
+def attach_transition_overrides(
+    items: list[dict[str, Any]],
+    overrides: dict[str, int | float],
+    errors: list[str],
+) -> None:
+    by_id = {item["id"]: item for item in items}
+    for item_id, minutes in overrides.items():
+        item = by_id.get(item_id)
+        if item is None:
+            errors.append(f"transition override references missing item: {item_id!r}")
+            continue
+        existing = item.get("transition_after_override")
+        if existing is not None:
+            errors.append(
+                f"transition for {item_id} is defined twice; keep either the item-specific "
+                "value or transition_overrides"
+            )
+            continue
+        item["transition_after_override"] = minutes
 
 
 def build_items(
@@ -591,9 +691,11 @@ def build_items(
             project_text = f"{speech.get('project', '')} {speech.get('title', '')}"
             duration = 6 if re.search(r"ice\s*breaker|破冰", project_text, re.I) else 7
         else:
-            duration = positive_int(minutes_value)
+            duration = positive_minutes(minutes_value)
             if duration is None:
-                errors.append(f"prepared speech {index} minutes must be a positive integer")
+                errors.append(
+                    f"prepared speech {index} minutes must be positive in 0.5-minute increments"
+                )
                 duration = 7
         details = []
         if not is_unresolved(speech.get("title")):
@@ -628,9 +730,12 @@ def build_items(
             if evaluation_minutes is None:
                 evaluation_duration = 3
             else:
-                evaluation_duration = positive_int(evaluation_minutes)
+                evaluation_duration = positive_minutes(evaluation_minutes)
                 if evaluation_duration is None:
-                    errors.append(f"prepared speech {index} evaluation_minutes must be a positive integer")
+                    errors.append(
+                        f"prepared speech {index} evaluation_minutes must be positive "
+                        "in 0.5-minute increments"
+                    )
                     evaluation_duration = 3
             eval_label = display_label("prepared_evaluation", language, speech.get("evaluation_label"))
             evaluation_items.append(
@@ -666,10 +771,12 @@ def build_items(
                 tt_duration = None
                 tt_locked = False
             else:
-                tt_duration = positive_int(minutes_value)
+                tt_duration = positive_minutes(minutes_value)
                 tt_locked = True
                 if tt_duration is None:
-                    errors.append("impromptu.minutes must be a positive integer")
+                    errors.append(
+                        "impromptu.minutes must be positive in 0.5-minute increments"
+                    )
                     tt_duration = 15
             table_topics_item = make_item(
                 "table_topics",
@@ -692,10 +799,12 @@ def build_items(
                     eval_duration = None
                     eval_locked = False
                 else:
-                    eval_duration = positive_int(evaluation_minutes)
+                    eval_duration = positive_minutes(evaluation_minutes)
                     eval_locked = True
                     if eval_duration is None:
-                        errors.append("impromptu.evaluation_minutes must be a positive integer")
+                        errors.append(
+                            "impromptu.evaluation_minutes must be positive in 0.5-minute increments"
+                        )
                         eval_duration = 7
                 table_topics_evaluation_item = make_item(
                     "table_topics_evaluation",
@@ -765,13 +874,15 @@ def build_items(
             continue
         title = segment.get("title")
         owner = segment.get("owner")
-        duration = positive_int(segment.get("minutes"))
+        duration = positive_minutes(segment.get("minutes"))
         if is_unresolved(title):
             errors.append(f"special segment {index} has unresolved title")
         if is_unresolved(owner):
             errors.append(f"special segment {index} has unresolved owner")
         if duration is None:
-            errors.append(f"special segment {index} minutes must be a positive integer")
+            errors.append(
+                f"special segment {index} minutes must be positive in 0.5-minute increments"
+            )
             duration = 1
         anchor = str(segment.get("after", "guest_introduction")).strip()
         anchor = last_anchor.get(anchor, anchor)
@@ -799,26 +910,31 @@ def build_items(
     return items
 
 
-def apply_transitions(items: list[dict[str, Any]], errors: list[str]) -> int:
-    total = 0
+def apply_transitions(
+    items: list[dict[str, Any]], errors: list[str]
+) -> int | float:
+    total_ticks = 0
     for index, item in enumerate(items):
         override = item.get("transition_after_override")
         if override is not None:
-            transition = nonnegative_int(override)
+            transition = nonnegative_minutes(override)
             if transition is None:
-                errors.append(f"{item['id']} transition_after must be a nonnegative integer")
+                errors.append(
+                    f"{item['id']} transition_after must be nonnegative "
+                    "in 0.5-minute increments"
+                )
                 transition = 0
         elif index == len(items) - 1 or item["type"] in NO_TRANSITION_AFTER:
             transition = 0
         else:
             transition = 1
         item["transition_after"] = transition
-        total += transition
-    return total
+        total_ticks += minute_ticks(transition)
+    return minutes_from_ticks(total_ticks)
 
 
 def score_flexible_solution(
-    actual: dict[str, int],
+    actual: dict[str, int | float],
     table_topics_present: bool,
     table_topics_evaluation_present: bool,
 ) -> float:
@@ -831,16 +947,23 @@ def score_flexible_solution(
         score += (actual["sharing"] - 6) ** 2
     if "table_topics" in actual:
         score += (actual["table_topics"] - 15) ** 2 * 0.01
+    score += sum(minute_ticks(value) % 2 for value in actual.values()) * 0.5
     return score
 
 
-def solve_flexible(items: list[dict[str, Any]], target_item_minutes: int) -> bool:
+def solve_flexible(
+    items: list[dict[str, Any]], target_item_minutes: int | float
+) -> bool:
     variables = [item for item in items if item.get("duration") is None]
-    locked_total = sum(int(item["duration"]) for item in items if item.get("duration") is not None)
-    required = target_item_minutes - locked_total
+    locked_total_ticks = sum(
+        minute_ticks(item["duration"])
+        for item in items
+        if item.get("duration") is not None
+    )
+    required_ticks = minute_ticks(target_item_minutes) - locked_total_ticks
     if not variables:
-        return required == 0
-    if required < len(variables):
+        return required_ticks == 0
+    if required_ticks < len(variables) * 2:
         return False
 
     by_type = {item["type"]: item for item in variables}
@@ -849,8 +972,8 @@ def solve_flexible(items: list[dict[str, Any]], target_item_minutes: int) -> boo
     tt_variable = "table_topics" in by_type
     eval_variable = "table_topics_evaluation" in by_type
 
-    tt_values = range(1, required + 1) if tt_variable else [None]
-    eval_values = range(1, required + 1) if eval_variable else [None]
+    tt_values = range(2, required_ticks + 1) if tt_variable else [None]
+    eval_values = range(2, required_ticks + 1) if eval_variable else [None]
     remaining_types = [
         item_type for item_type in ("photo_break", "sharing") if item_type in by_type
     ]
@@ -864,47 +987,75 @@ def solve_flexible(items: list[dict[str, Any]], target_item_minutes: int) -> boo
     for tt_value in tt_values:
         for eval_value in eval_values:
             assignment: dict[str, int] = {}
-            used = 0
+            used_ticks = 0
             if tt_variable:
                 assignment["table_topics"] = int(tt_value)
-                used += int(tt_value)
+                used_ticks += int(tt_value)
             if eval_variable:
                 assignment["table_topics_evaluation"] = int(eval_value)
-                used += int(eval_value)
-            remainder = required - used
+                used_ticks += int(eval_value)
+            remainder_ticks = required_ticks - used_ticks
             if not remaining_types:
-                if remainder != 0:
+                if remainder_ticks != 0:
                     continue
             elif len(remaining_types) == 1:
                 item_type = remaining_types[0]
                 lower, upper = FLEX_BOUNDS[item_type]
-                if not (lower <= remainder <= upper):
+                lower_ticks = minute_ticks(lower)
+                upper_ticks = minute_ticks(upper)
+                if not (lower_ticks <= remainder_ticks <= upper_ticks):
                     continue
-                assignment[item_type] = remainder
+                assignment[item_type] = remainder_ticks
             else:
                 first, second = remaining_types
-                first_pref = 5 if first == "photo_break" else 6
-                second_pref = 5 if second == "photo_break" else 6
+                first_pref = minute_ticks(5 if first == "photo_break" else 6)
+                second_pref = minute_ticks(5 if second == "photo_break" else 6)
                 first_min, first_max = FLEX_BOUNDS[first]
                 second_min, second_max = FLEX_BOUNDS[second]
-                feasible_min = max(first_min, remainder - second_max)
-                feasible_max = min(first_max, remainder - second_min)
+                first_min_ticks = minute_ticks(first_min)
+                first_max_ticks = minute_ticks(first_max)
+                second_min_ticks = minute_ticks(second_min)
+                second_max_ticks = minute_ticks(second_max)
+                feasible_min = max(
+                    first_min_ticks, remainder_ticks - second_max_ticks
+                )
+                feasible_max = min(
+                    first_max_ticks, remainder_ticks - second_min_ticks
+                )
                 if feasible_min > feasible_max:
                     continue
-                first_value = round((remainder + first_pref - second_pref) / 2)
-                first_value = max(feasible_min, min(feasible_max, first_value))
+                ideal_first = (
+                    remainder_ticks + first_pref - second_pref
+                ) / 2
+                first_value = min(
+                    range(feasible_min, feasible_max + 1),
+                    key=lambda value: (
+                        value % 2 + (remainder_ticks - value) % 2,
+                        abs(value - ideal_first),
+                    ),
+                )
                 assignment[first] = first_value
-                assignment[second] = remainder - first_value
+                assignment[second] = remainder_ticks - first_value
 
-            actual: dict[str, int] = {}
+            actual: dict[str, int | float] = {}
             for item_type in ("table_topics", "table_topics_evaluation", "photo_break", "sharing"):
                 item = next((row for row in items if row["type"] == item_type), None)
                 if item is None:
                     continue
                 if item_type in assignment:
-                    actual[item_type] = assignment[item_type]
+                    actual[item_type] = minutes_from_ticks(assignment[item_type])
                 else:
-                    actual[item_type] = int(item["duration"])
+                    actual[item_type] = item["duration"]
+            if (tt_variable or eval_variable) and {
+                "table_topics",
+                "table_topics_evaluation",
+            }.issubset(actual):
+                evaluation_gap = abs(
+                    float(actual["table_topics_evaluation"])
+                    - float(actual["table_topics"]) / 2
+                )
+                if evaluation_gap > AUTO_EVALUATION_MAX_DEVIATION:
+                    continue
             score = score_flexible_solution(
                 actual,
                 table_topics_present=tt_item is not None,
@@ -915,17 +1066,17 @@ def solve_flexible(items: list[dict[str, Any]], target_item_minutes: int) -> boo
 
     if best is None:
         return False
-    for item_type, duration in best[1].items():
-        by_type[item_type]["duration"] = duration
+    for item_type, duration_ticks in best[1].items():
+        by_type[item_type]["duration"] = minutes_from_ticks(duration_ticks)
         by_type[item_type]["computed_flexible"] = True
     return True
 
 
 def fill_flexible_preferences(items: list[dict[str, Any]]) -> None:
-    tt_duration: int | None = None
+    tt_duration: int | float | None = None
     for item in items:
         if item["type"] == "table_topics" and item.get("duration") is not None:
-            tt_duration = int(item["duration"])
+            tt_duration = item["duration"]
     for item in items:
         if item.get("duration") is not None:
             continue
@@ -933,9 +1084,10 @@ def fill_flexible_preferences(items: list[dict[str, Any]]) -> None:
             item["duration"] = 15
             tt_duration = 15
         elif item["type"] == "table_topics_evaluation":
-            item["duration"] = max(1, round((tt_duration or 15) / 2))
+            half_ticks = math.floor(float(tt_duration or 15) + 0.5)
+            item["duration"] = max(1, minutes_from_ticks(half_ticks))
         else:
-            item["duration"] = int(item.get("preferred_duration") or 1)
+            item["duration"] = positive_minutes(item.get("preferred_duration")) or 1
 
 
 def validate_owners(items: list[dict[str, Any]], errors: list[str]) -> None:
@@ -950,21 +1102,24 @@ def validate_role_relationships(items: list[dict[str, Any]], warnings: list[str]
     if evaluation and not tt:
         warnings.append("table topics evaluation exists without a table topics session")
     if tt and evaluation and tt.get("duration") and evaluation.get("duration"):
-        difference = abs(int(evaluation["duration"]) - int(tt["duration"]) / 2)
-        if difference > 2:
+        difference = abs(float(evaluation["duration"]) - float(tt["duration"]) / 2)
+        if difference > AUTO_EVALUATION_MAX_DEVIATION:
             warnings.append(
-                f"table topics evaluation is {evaluation['duration']} minutes while table topics is "
-                f"{tt['duration']} minutes; confirm this intentional deviation"
+                "table topics evaluation is "
+                f"{format_minutes(evaluation['duration'])} minutes while table topics is "
+                f"{format_minutes(tt['duration'])} minutes; confirm this intentional deviation"
             )
 
 
-def assign_timeline(items: list[dict[str, Any]], start: int) -> int:
+def assign_timeline(
+    items: list[dict[str, Any]], start: int | float
+) -> int | float:
     cursor = start
     for item in items:
         item["start"] = format_clock(cursor)
-        cursor += int(item["duration"])
+        cursor += item["duration"]
         item["end"] = format_clock(cursor)
-        cursor += int(item["transition_after"])
+        cursor += item["transition_after"]
     return cursor
 
 
@@ -1061,18 +1216,30 @@ def build_agenda(
     declared_window = declared_end - start
     if declared_window > 360:
         errors.append(
-            f"meeting window is {declared_window} minutes; use a window of 360 minutes or less"
+            f"meeting window is {format_minutes(declared_window)} minutes; "
+            "use a window of 360 minutes or less"
         )
     if declared_window != 120:
-        warnings.append(f"current meeting window is {declared_window} minutes, not the 120-minute default")
+        warnings.append(
+            f"current meeting window is {format_minutes(declared_window)} minutes, "
+            "not the 120-minute default"
+        )
 
-    approved_overtime = meeting.get("approved_overtime_minutes", 0)
-    if nonnegative_int(approved_overtime) is None:
-        errors.append("meeting.approved_overtime_minutes must be a nonnegative integer")
+    approved_overtime = nonnegative_minutes(
+        meeting.get("approved_overtime_minutes", 0)
+    )
+    if approved_overtime is None:
+        errors.append(
+            "meeting.approved_overtime_minutes must be nonnegative "
+            "in 0.5-minute increments"
+        )
         approved_overtime = 0
     role_order, roles = parse_roles(normalized.get("roles"), errors)
     backstage = parse_backstage(normalized.get("backstage"), errors)
     overrides = parse_overrides(normalized.get("standard_overrides"), errors)
+    transition_overrides = parse_transition_overrides(
+        normalized.get("transition_overrides"), errors
+    )
     items = build_items(
         normalized,
         language,
@@ -1083,6 +1250,7 @@ def build_agenda(
         overrides,
         errors,
     )
+    attach_transition_overrides(items, transition_overrides, errors)
     validate_owners(items, errors)
     transition_minutes = apply_transitions(items, errors)
     target_item_minutes = declared_window - transition_minutes
@@ -1090,22 +1258,29 @@ def build_agenda(
     if not solved:
         fill_flexible_preferences(items)
 
-    total_item_minutes = sum(int(item["duration"]) for item in items)
-    total_minutes = total_item_minutes + transition_minutes
-    delta = total_minutes - declared_window
+    total_item_minutes = minutes_from_ticks(
+        sum(minute_ticks(item["duration"]) for item in items)
+    )
+    total_minutes = minutes_from_ticks(
+        minute_ticks(total_item_minutes) + minute_ticks(transition_minutes)
+    )
+    delta = minutes_from_ticks(
+        minute_ticks(total_minutes) - minute_ticks(declared_window)
+    )
     if delta > 0:
-        if int(approved_overtime) != delta:
+        if approved_overtime != delta:
             errors.append(
-                f"timeline overruns the declared meeting window by {delta} minutes; "
-                f"approved_overtime_minutes is {approved_overtime}. Ask the user to approve exactly "
-                f"{delta} minutes or reduce content"
+                "timeline overruns the declared meeting window by "
+                f"{format_minutes(delta)} minutes; approved_overtime_minutes is "
+                f"{format_minutes(approved_overtime)}. Ask the user to approve exactly "
+                f"{format_minutes(delta)} minutes or reduce content"
             )
     elif delta < 0:
         errors.append(
-            f"timeline has {abs(delta)} unexplained minutes remaining; "
+            f"timeline has {format_minutes(abs(delta))} unexplained minutes remaining; "
             "adjust the flexible sessions or add an explicit buffer"
         )
-    elif int(approved_overtime) > 0:
+    elif approved_overtime > 0:
         errors.append(
             "approved_overtime_minutes no longer matches a current overrun; reset it to 0 and "
             "reconfirm any later overrun"
@@ -1113,7 +1288,9 @@ def build_agenda(
 
     final_cursor = assign_timeline(items, start)
     validate_role_relationships(items, warnings)
-    effective_window = declared_window + int(approved_overtime)
+    effective_window = minutes_from_ticks(
+        minute_ticks(declared_window) + minute_ticks(approved_overtime)
+    )
     page_item_limit = 20 if language == "bilingual" else 23
     timeline_page_count = max(1, (len(items) + page_item_limit - 1) // page_item_limit)
     estimated_page_count = timeline_page_count + (1 if support_components else 0)
@@ -1121,13 +1298,13 @@ def build_agenda(
     computed = {
         "status": (
             "exact_with_approved_overtime"
-            if delta > 0 and int(approved_overtime) == delta and not errors
+            if delta > 0 and approved_overtime == delta and not errors
             else "exact"
             if delta == 0 and not errors
             else "needs_confirmation"
         ),
         "declared_window_minutes": declared_window,
-        "approved_overtime_minutes": int(approved_overtime),
+        "approved_overtime_minutes": approved_overtime,
         "effective_window_minutes": effective_window,
         "item_minutes": total_item_minutes,
         "transition_minutes": transition_minutes,
@@ -1265,13 +1442,14 @@ def render_markdown(result: dict[str, Any]) -> str:
         activity = item["label"] + (f"<br><small>{details}</small>" if details else "")
         lines.append(
             f"| {item['start']}-{item['end']} | {activity} | {item['owner']} | "
-            f"{item['duration']} min |"
+            f"{format_minutes(item['duration'])} min |"
         )
     lines.extend(
         [
             "",
-            f"**{labels['summary']}：** {computed['item_minutes']} min + "
-            f"{computed['transition_minutes']} min transitions = {computed['total_minutes']} min；"
+            f"**{labels['summary']}：** {format_minutes(computed['item_minutes'])} min + "
+            f"{format_minutes(computed['transition_minutes'])} min transitions = "
+            f"{format_minutes(computed['total_minutes'])} min；"
             f"{computed['start']}-{computed['final_end']}。",
         ]
     )
@@ -1494,7 +1672,7 @@ def render_html(result: dict[str, Any]) -> str:
                 f'<td class="time">{html.escape(item["start"])}</td>'
                 f'<td class="activity">{html.escape(item["label"])}{detail_html}</td>'
                 f'<td class="owner">{html.escape(item["owner"])}</td>'
-                f'<td class="duration">{item["duration"]} min</td>'
+                f'<td class="duration">{format_minutes(item["duration"])} min</td>'
                 "</tr>"
             )
         return "".join(rows)
@@ -1528,7 +1706,7 @@ def render_html(result: dict[str, Any]) -> str:
   </section>
   <footer class="footer">
     <div class="backstage"><strong>{backstage_label}</strong> · {backstage or "—"}</div>
-    <div class="timecheck"><strong>{time_label}</strong> · {computed['item_minutes']} + {computed['transition_minutes']} = {computed['total_minutes']} min</div>
+    <div class="timecheck"><strong>{time_label}</strong> · {format_minutes(computed['item_minutes'])} + {format_minutes(computed['transition_minutes'])} = {format_minutes(computed['total_minutes'])} min</div>
     <div class="site">{website} · {page_marker}</div>
   </footer>
 </main>"""
