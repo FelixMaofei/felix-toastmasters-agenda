@@ -2,6 +2,27 @@
   "club": {
     "name": "Example Toastmasters Club",
     "default_location": "Example Meeting Room",
-    "language": "zh"
+    "language": "zh",
+    "support_components": [
+      "timer_rules",
+      "toastmasters_intro",
+      "meeting_boundaries",
+      "officers"
+    ],
+    "officers": [
+      {"role": "President", "name": "Member A"},
+      {"role": "VPE", "name": "Member B"},
+      {"role": "VPM", "name": "Member C"},
+      {"role": "VPPR", "name": "Member D"},
+      {"role": "Secretary", "name": "Member E"},
+      {"role": "Treasurer", "name": "Member F"},
+      {"role": "SAA", "name": "Member G"}
+    ],
+    "club_intro": [
+      "Optional introduction shown only when club_intro is selected."
+    ],
+    "join_info": [
+      "Optional joining information shown only when join_info is selected."
+    ]
   }
 }

@@ -7,7 +7,8 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
   "club": {
     "name": "Example Toastmasters Club",
     "default_location": "Meeting Room / Online",
-    "language": "zh"
+    "language": "zh",
+    "support_components": []
   },
   "meeting": {
     "number": "236",
@@ -36,7 +37,53 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 - `default_location`：必填；本期 `meeting.location` 可覆盖。
 - `language`：`zh`、`en` 或 `bilingual`。
 
-俱乐部首次初始化只需长期保存这三个字段。旧会单只能用来提取并确认它们，不能成为样式或流程模板。
+俱乐部首次初始化至少保存这三个身份字段，并记录用户选择的固定信息组件。上面的 `[]` 是一个有效示例，意思是“用户明确只要纯议程”；如果用户尚未选择，应删掉整个字段并先询问，不能擅自写 `[]`。
+
+旧会单可以帮助识别身份、当届官员和常用组件的候选值，但不能成为视觉样式或固定流程模板。只有用户确认后才保存；旧会单出现过某组件，不自动等于俱乐部的长期选择，任期官员也要确认仍为当届。
+
+### 固定信息组件
+
+固定信息组件必须由用户选择，可以为空。字段缺失表示“尚未选择，必须问”；`[]` 表示“用户已明确不要信息附页”。
+
+取值顺序：
+
+1. `meeting.support_components` 存在：完整采用它，包括 `[]`；
+2. 否则 `club.support_components` 存在：完整采用它，包括 `[]`；
+3. 两处都不存在：询问用户；
+4. 单期数组是完整覆盖，不与俱乐部数组合并。
+
+可选组件：
+
+| ID | 内容 | 所需输入 |
+|---|---|---|
+| `timer_rules` | 内置时间官规则 | 无 |
+| `toastmasters_intro` | 内置头马介绍 | 无 |
+| `meeting_boundaries` | 内置会议秩序与四类禁忌 | 无 |
+| `officers` | 当届官员团队 | `club.officers` |
+| `club_intro` | 俱乐部介绍 | `club.club_intro` |
+| `join_info` | 如何入会 | `club.join_info` |
+| `vpm_qr` | VPM 入会二维码 | `club.vpm_qr_image` |
+| `voting_qr` | 本期投票二维码 | `meeting.voting_qr_image` |
+
+首次询问时，可以把前四项作为推荐选项展示，但推荐不等于自动加入。未经用户选择不得写入。用户可以全选、部分选择或使用空数组只生成议程页。
+
+官员团队使用：
+
+```json
+{
+  "officers": [
+    {"role": "President", "name": "Member A"},
+    {"role": "VPE", "name": "Member B"},
+    {"role": "VPM", "name": "Member C"},
+    {"role": "VPPR", "name": "Member D"},
+    {"role": "Secretary", "name": "Member E"},
+    {"role": "Treasurer", "name": "Member F"},
+    {"role": "SAA", "name": "Member G"}
+  ]
+}
+```
+
+`club_intro` 和 `join_info` 可使用字符串数组。二维码路径可用绝对路径，或使用相对于本期 meeting JSON 的路径。生成器只嵌入用户原图；不从旧 PDF/截图裁切，不重绘或修复二维码。
 
 ## 2. 本期会议
 
@@ -48,6 +95,8 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 - `theme`、`word_of_day`、`manager`：有则显示。
 - `president`：用于会长致辞与闭幕；不是长期俱乐部配置。
 - `approved_overtime_minutes`：默认 `0`。只有用户明确同意当前计算所需的准确分钟数后才能写入；内容变化后若超时分钟数不同，旧授权自动失效。
+- `support_components`：可选；本期需要改变俱乐部常用组合时覆盖 `club.support_components`。
+- `voting_qr_image`：选择 `voting_qr` 组件时必填。
 
 ## 3. 角色
 

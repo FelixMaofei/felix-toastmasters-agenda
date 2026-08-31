@@ -2,7 +2,28 @@
   "club": {
     "name": "示例头马演讲俱乐部",
     "default_location": "示例会议室",
-    "language": "zh"
+    "language": "zh",
+    "support_components": [
+      "timer_rules",
+      "toastmasters_intro",
+      "meeting_boundaries",
+      "officers"
+    ],
+    "officers": [
+      {"role": "President", "name": "成员B"},
+      {"role": "VPE", "name": "成员K"},
+      {"role": "VPM", "name": "成员L"},
+      {"role": "VPPR", "name": "成员M"},
+      {"role": "Secretary", "name": "成员N"},
+      {"role": "Treasurer", "name": "成员O"},
+      {"role": "SAA", "name": "成员C"}
+    ],
+    "club_intro": [
+      "一个通过持续练习和互相反馈，提升表达与领导力的成长社群。"
+    ],
+    "join_info": [
+      "欢迎先参加例会体验，再联系会员副会长了解入会方式。"
+    ]
   },
   "meeting": {
     "number": "236",

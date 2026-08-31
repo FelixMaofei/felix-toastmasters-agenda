@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import unittest
@@ -181,11 +182,108 @@ class AgendaBuilderTests(unittest.TestCase):
         result, errors, _ = BUILDER.build_agenda(data)
         self.assertEqual(errors, [])
         self.assertEqual(result["computed"]["row_count"], 41)
+        self.assertEqual(result["computed"]["page_count"], 3)
+        rendered = BUILDER.render_html(result)
+        self.assertIn('<meta name="agenda-page-count" content="3">', rendered)
+        self.assertIn("备稿点评 12", rendered)
+        self.assertEqual(rendered.count('class="page '), 3)
+
+    def test_recommended_support_components_create_second_page(self) -> None:
+        result, errors, _ = BUILDER.build_agenda(example())
+        self.assertEqual(errors, [])
         self.assertEqual(result["computed"]["page_count"], 2)
         rendered = BUILDER.render_html(result)
-        self.assertIn('<meta name="agenda-page-count" content="2">', rendered)
-        self.assertIn("备稿点评 12", rendered)
+        self.assertIn("时间官规则", rendered)
+        self.assertIn("当届官员团队", rendered)
+        self.assertIn("四类禁忌", rendered)
         self.assertEqual(rendered.count('class="page '), 2)
+
+    def test_empty_support_components_keep_agenda_only(self) -> None:
+        data = example()
+        data["club"]["support_components"] = []
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(result["computed"]["page_count"], 1)
+        rendered = BUILDER.render_html(result)
+        self.assertNotIn('<main class="page support-page', rendered)
+        self.assertTrue(any(row["type"] == "president_opening" for row in result["timeline"]))
+
+    def test_meeting_support_components_fully_override_club_selection(self) -> None:
+        data = example()
+        data["meeting"]["support_components"] = []
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(result["support_components"], [])
+        self.assertEqual(result["computed"]["page_count"], 1)
+
+    def test_full_english_officer_titles_are_accepted(self) -> None:
+        data = example()
+        data["club"]["officers"] = [
+            {"role": "President", "name": "Member A"},
+            {"role": "Vice President Education", "name": "Member B"},
+            {"role": "Vice President Membership", "name": "Member C"},
+            {"role": "Vice President Public Relations", "name": "Member D"},
+            {"role": "Secretary", "name": "Member E"},
+            {"role": "Treasurer", "name": "Member F"},
+            {"role": "Sergeant at Arms", "name": "Member G"},
+        ]
+        _, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+
+    def test_support_component_selection_is_required(self) -> None:
+        data = example()
+        del data["club"]["support_components"]
+        _, errors, _ = BUILDER.build_agenda(data)
+        self.assertTrue(any("support_components must be an explicit array" in error for error in errors))
+
+    def test_selected_officer_component_requires_core_team(self) -> None:
+        data = example()
+        data["club"]["officers"] = data["club"]["officers"][:-1]
+        _, errors, _ = BUILDER.build_agenda(data)
+        self.assertTrue(any("missing core roles" in error for error in errors))
+
+    def test_selected_intro_components_require_text(self) -> None:
+        data = example()
+        data["club"]["support_components"] = ["club_intro", "join_info"]
+        data["club"].pop("club_intro")
+        data["club"].pop("join_info")
+        _, errors, _ = BUILDER.build_agenda(data)
+        self.assertTrue(any("club.club_intro is empty" in error for error in errors))
+        self.assertTrue(any("club.join_info is empty" in error for error in errors))
+
+    def test_selected_qr_components_embed_user_images(self) -> None:
+        data = example()
+        data["club"]["support_components"] = [
+            "timer_rules",
+            "toastmasters_intro",
+            "meeting_boundaries",
+            "officers",
+            "club_intro",
+            "join_info",
+            "vpm_qr",
+            "voting_qr",
+        ]
+        data["club"]["vpm_qr_image"] = "../assets/toastmasters-logo.png"
+        data["meeting"]["voting_qr_image"] = "../assets/toastmasters-logo.png"
+        result, errors, _ = BUILDER.build_agenda(data, source_dir=ROOT / "examples")
+        self.assertEqual(errors, [])
+        self.assertTrue(result["club"]["vpm_qr_present"])
+        self.assertTrue(result["meeting"]["voting_qr_present"])
+        rendered = BUILDER.render_html(result)
+        self.assertIn("入会咨询", rendered)
+        self.assertIn("本期投票", rendered)
+        encoded = result["_assets"]["vpm_qr_data_uri"].split(",", 1)[1]
+        self.assertEqual(
+            base64.b64decode(encoded),
+            (ROOT / "assets" / "toastmasters-logo.png").read_bytes(),
+        )
+
+    def test_selected_qr_component_rejects_missing_image(self) -> None:
+        data = example()
+        data["club"]["support_components"] = ["vpm_qr"]
+        data["club"]["vpm_qr_image"] = "missing.png"
+        _, errors, _ = BUILDER.build_agenda(data, source_dir=ROOT / "examples")
+        self.assertTrue(any("does not exist" in error for error in errors))
 
 
 if __name__ == "__main__":

@@ -105,6 +105,93 @@ FLEX_BOUNDS = {
     "sharing": (1, 20),
 }
 
+CORE_OFFICER_ALIASES = {
+    "president": {"president", "会长", "主席"},
+    "vpe": {
+        "vpe",
+        "vice president education",
+        "vice president of education",
+        "教育副会长",
+    },
+    "vpm": {
+        "vpm",
+        "vice president membership",
+        "vice president of membership",
+        "会员副会长",
+    },
+    "vppr": {
+        "vppr",
+        "vice president public relations",
+        "vice president of public relations",
+        "公关副会长",
+    },
+    "secretary": {"secretary", "秘书", "秘书长"},
+    "treasurer": {"treasurer", "财务官"},
+    "saa": {"saa", "sergeant at arms", "sergeant-at-arms", "事务官"},
+}
+
+SUPPORT_COMPONENTS = {
+    "timer_rules",
+    "toastmasters_intro",
+    "meeting_boundaries",
+    "officers",
+    "club_intro",
+    "join_info",
+    "vpm_qr",
+    "voting_qr",
+}
+
+TOASTMASTERS_INTRO = {
+    "zh": (
+        "头马国际演讲会成立于1924年，是一个通过全球俱乐部网络帮助会员建立自信、"
+        "提升公众演讲、沟通与领导力的非营利教育组织。"
+    ),
+    "en": (
+        "Toastmasters International, founded in 1924, is a nonprofit educational "
+        "organization that builds confidence and teaches public speaking, communication "
+        "and leadership through a worldwide network of clubs."
+    ),
+}
+
+TIMER_RULES = [
+    {
+        "band_zh": "3分钟及以下",
+        "band_en": "3 min or less",
+        "green_zh": "剩余1分钟",
+        "green_en": "1 min left",
+        "yellow_zh": "剩余30秒",
+        "yellow_en": "30 sec left",
+        "red_zh": "时间到",
+        "red_en": "Time",
+        "bell_zh": "超时15秒响铃",
+        "bell_en": "Bell at +15 sec",
+    },
+    {
+        "band_zh": "超过3分钟至10分钟",
+        "band_en": "Over 3 to 10 min",
+        "green_zh": "剩余2分钟",
+        "green_en": "2 min left",
+        "yellow_zh": "剩余1分钟",
+        "yellow_en": "1 min left",
+        "red_zh": "时间到",
+        "red_en": "Time",
+        "bell_zh": "超时30秒响铃",
+        "bell_en": "Bell at +30 sec",
+    },
+    {
+        "band_zh": "10分钟以上",
+        "band_en": "Over 10 min",
+        "green_zh": "剩余5分钟",
+        "green_en": "5 min left",
+        "yellow_zh": "剩余2分钟",
+        "yellow_en": "2 min left",
+        "red_zh": "时间到",
+        "red_en": "Time",
+        "bell_zh": "超时30秒响铃",
+        "bell_en": "Bell at +30 sec",
+    },
+]
+
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(base)
@@ -178,6 +265,22 @@ def section_label(section: str, language: str) -> str:
     return zh
 
 
+def localized(zh: str, en: str, language: str) -> str:
+    if language == "en":
+        return en
+    if language == "bilingual":
+        return f"{zh} / {en}"
+    return zh
+
+
+def toastmasters_intro(language: str) -> str:
+    if language == "en":
+        return TOASTMASTERS_INTRO["en"]
+    if language == "bilingual":
+        return TOASTMASTERS_INTRO["zh"] + " " + TOASTMASTERS_INTRO["en"]
+    return TOASTMASTERS_INTRO["zh"]
+
+
 def normalize_details(value: Any) -> list[str]:
     if value is None:
         return []
@@ -186,6 +289,79 @@ def normalize_details(value: Any) -> list[str]:
     if is_unresolved(value):
         return []
     return [str(value).strip()]
+
+
+def normalize_support_text(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if not is_unresolved(item)]
+    if is_unresolved(value):
+        return []
+    text = str(value).strip()
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def normalize_officer_key(value: Any) -> str | None:
+    token = re.sub(r"[^a-z]", "", str(value).lower())
+    original = str(value).strip().lower()
+    for key, aliases in CORE_OFFICER_ALIASES.items():
+        for alias in aliases:
+            alias_lower = alias.lower()
+            alias_token = re.sub(r"[^a-z]", "", alias_lower)
+            if original == alias_lower or (token and alias_token and token == alias_token):
+                return key
+    return None
+
+
+def parse_officers(value: Any, errors: list[str]) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not value:
+        errors.append("club.officers is required and must list the current officer team")
+        return []
+    result: list[dict[str, str]] = []
+    seen_core: set[str] = set()
+    for index, row in enumerate(value, start=1):
+        if not isinstance(row, dict):
+            errors.append(f"club.officers[{index}] must be an object")
+            continue
+        role = row.get("role")
+        name = row.get("name")
+        if is_unresolved(role):
+            errors.append(f"club.officers[{index}] is missing role")
+        if is_unresolved(name):
+            errors.append(f"club.officers[{index}] is missing name")
+        role_text = "" if role is None else str(role).strip()
+        name_text = "" if name is None else str(name).strip()
+        core_key = normalize_officer_key(role_text)
+        if core_key:
+            if core_key in seen_core:
+                errors.append(f"club.officers contains duplicate core role: {role_text}")
+            seen_core.add(core_key)
+        result.append({"role": role_text, "name": name_text})
+    missing = [key.upper() if key.startswith("vp") or key == "saa" else key.title() for key in CORE_OFFICER_ALIASES if key not in seen_core]
+    if missing:
+        errors.append("club.officers is missing core roles: " + ", ".join(missing))
+    return result
+
+
+def parse_support_components(value: Any, errors: list[str]) -> list[str]:
+    if not isinstance(value, list):
+        errors.append(
+            "support_components must be an explicit array; ask the user which fixed-content "
+            "components to include"
+        )
+        return []
+    result: list[str] = []
+    for index, item in enumerate(value, start=1):
+        component = str(item).strip()
+        if component not in SUPPORT_COMPONENTS:
+            errors.append(f"support_components[{index}] is unsupported: {component!r}")
+            continue
+        if component in result:
+            errors.append(f"duplicate support component: {component}")
+            continue
+        result.append(component)
+    return result
 
 
 def find_photographer(backstage: list[dict[str, Any]]) -> str | None:
@@ -792,7 +968,10 @@ def assign_timeline(items: list[dict[str, Any]], start: int) -> int:
     return cursor
 
 
-def build_agenda(data: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[str]]:
+def build_agenda(
+    data: dict[str, Any],
+    source_dir: Path | None = None,
+) -> tuple[dict[str, Any], list[str], list[str]]:
     normalized = deepcopy(data)
     errors: list[str] = []
     warnings: list[str] = []
@@ -808,7 +987,6 @@ def build_agenda(data: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[
     if language not in LANGUAGES:
         errors.append("club.language must be zh, en, or bilingual")
         language = "zh"
-
     meeting = normalized.get("meeting")
     if not isinstance(meeting, dict):
         errors.append("meeting must be an object")
@@ -820,6 +998,46 @@ def build_agenda(data: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[
     if is_unresolved(location):
         errors.append("meeting location is unresolved")
     meeting["location"] = "" if location is None else str(location).strip()
+    support_components = parse_support_components(
+        meeting.get("support_components", club.get("support_components")),
+        errors,
+    )
+    officers = (
+        parse_officers(club.get("officers"), errors)
+        if "officers" in support_components
+        else []
+    )
+    club_intro = normalize_support_text(club.get("club_intro"))
+    join_info = normalize_support_text(club.get("join_info"))
+    if "club_intro" in support_components and not club_intro:
+        errors.append("club_intro component is selected but club.club_intro is empty")
+    if "join_info" in support_components and not join_info:
+        errors.append("join_info component is selected but club.join_info is empty")
+    resolved_source_dir = (source_dir or Path.cwd()).expanduser().resolve()
+    vpm_qr_data = ""
+    if "vpm_qr" in support_components:
+        if is_unresolved(club.get("vpm_qr_image")):
+            errors.append("vpm_qr component is selected but club.vpm_qr_image is missing")
+        else:
+            vpm_qr_data = resolve_support_image(
+                club.get("vpm_qr_image"),
+                resolved_source_dir,
+                errors,
+                "club.vpm_qr_image",
+            )
+    voting_qr_data = ""
+    if "voting_qr" in support_components:
+        if is_unresolved(meeting.get("voting_qr_image")):
+            errors.append(
+                "voting_qr component is selected but meeting.voting_qr_image is missing"
+            )
+        else:
+            voting_qr_data = resolve_support_image(
+                meeting.get("voting_qr_image"),
+                resolved_source_dir,
+                errors,
+                "meeting.voting_qr_image",
+            )
 
     try:
         start = parse_clock(meeting.get("start"))
@@ -897,7 +1115,8 @@ def build_agenda(data: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[
     validate_role_relationships(items, warnings)
     effective_window = declared_window + int(approved_overtime)
     page_item_limit = 20 if language == "bilingual" else 23
-    estimated_page_count = max(1, (len(items) + page_item_limit - 1) // page_item_limit)
+    timeline_page_count = max(1, (len(items) + page_item_limit - 1) // page_item_limit)
+    estimated_page_count = timeline_page_count + (1 if support_components else 0)
 
     computed = {
         "status": (
@@ -927,6 +1146,11 @@ def build_agenda(data: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[
             "name": str(club.get("name", "")).strip(),
             "default_location": str(club.get("default_location", "")).strip(),
             "language": language,
+            "support_components": support_components,
+            "officers": officers,
+            "club_intro": club_intro,
+            "join_info": join_info,
+            "vpm_qr_present": bool(vpm_qr_data),
         },
         "meeting": {
             key: meeting.get(key)
@@ -948,7 +1172,13 @@ def build_agenda(data: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[
         "backstage": backstage,
         "computed": computed,
         "warnings": warnings,
+        "support_components": support_components,
+        "_assets": {
+            "vpm_qr_data_uri": vpm_qr_data,
+            "voting_qr_data_uri": voting_qr_data,
+        },
     }
+    result["meeting"]["voting_qr_present"] = bool(voting_qr_data)
     return result, errors, warnings
 
 
@@ -1050,15 +1280,139 @@ def render_markdown(result: dict[str, Any]) -> str:
             f"{row['label']}：{row['person']}" for row in result["backstage"]
         )
         lines.extend(["", f"**{labels['backstage']}：** {backstage_text}"])
+    support_components = result.get("support_components", [])
+    if support_components:
+        lines.extend(
+            [
+                "",
+                f"## {localized('固定信息组件', 'Support Components', language)}",
+            ]
+        )
+    if "timer_rules" in support_components:
+        lines.extend(
+            [
+                "",
+                f"### {localized('时间官规则', 'Timer Rules', language)}",
+                "",
+                f"| {localized('演讲时长', 'Speech length', language)} | "
+                f"{localized('绿牌', 'Green', language)} | "
+                f"{localized('黄牌', 'Yellow', language)} | "
+                f"{localized('红牌', 'Red', language)} | "
+                f"{localized('响铃', 'Bell', language)} |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for row in TIMER_RULES:
+            lines.append(
+                f"| {localized(row['band_zh'], row['band_en'], language)} | "
+                f"{localized(row['green_zh'], row['green_en'], language)} | "
+                f"{localized(row['yellow_zh'], row['yellow_en'], language)} | "
+                f"{localized(row['red_zh'], row['red_en'], language)} | "
+                f"{localized(row['bell_zh'], row['bell_en'], language)} |"
+            )
+    if "toastmasters_intro" in support_components:
+        lines.extend(
+            [
+                "",
+                f"### {localized('头马国际演讲会', 'Toastmasters International', language)}",
+                "",
+                toastmasters_intro(language),
+            ]
+        )
+    if "meeting_boundaries" in support_components:
+        lines.extend(
+            [
+                "",
+                f"### {localized('会议秩序与内容边界', 'Meeting Conduct & Content Boundaries', language)}",
+                "",
+                f"- {localized('安静：会议过程中保持安静，手机调至静音或震动。', 'Quiet: keep phones silent or on vibrate during the meeting.', language)}",
+                f"- {localized('四类禁忌：演讲不涉及政治、宗教、色情或传销。', 'Four boundaries: avoid politics, religion, pornography and pyramid selling.', language)}",
+                f"- {localized('整洁：结束后带走个人物品与垃圾。', 'Clean: take personal belongings and rubbish when leaving.', language)}",
+            ]
+        )
+    if "officers" in support_components:
+        lines.extend(
+            [
+                "",
+                f"### {localized('当届官员团队', 'Current Officer Team', language)}",
+                "",
+                f"| {localized('职务', 'Role', language)} | {localized('姓名', 'Name', language)} |",
+                "|---|---|",
+            ]
+        )
+        for officer in result["club"]["officers"]:
+            lines.append(f"| {officer['role']} | {officer['name']} |")
+    if "club_intro" in support_components:
+        lines.extend(
+            [
+                "",
+                f"### {localized('俱乐部介绍', 'About the Club', language)}",
+                "",
+                *[f"- {line}" for line in result["club"]["club_intro"]],
+            ]
+        )
+    if "join_info" in support_components:
+        lines.extend(
+            [
+                "",
+                f"### {localized('如何入会', 'How to Join', language)}",
+                "",
+                *[f"- {line}" for line in result["club"]["join_info"]],
+            ]
+        )
+    if "vpm_qr" in support_components:
+        lines.extend(
+            [
+                "",
+                f"- {localized('VPM 入会二维码：见会单附页。', 'VPM joining QR: see the support page.', language)}",
+            ]
+        )
+    if "voting_qr" in support_components:
+        lines.extend(
+            [
+                "",
+                f"- {localized('本期投票二维码：见会单附页。', 'Meeting voting QR: see the support page.', language)}",
+            ]
+        )
     return "\n".join(lines) + "\n"
 
 
 def image_data_uri(path: Path) -> str:
     if not path.is_file():
         return ""
-    mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+    }.get(path.suffix.lower())
+    if not mime:
+        raise ValueError(f"unsupported image format: {path.suffix}")
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def resolve_support_image(
+    value: Any,
+    source_dir: Path,
+    errors: list[str],
+    label: str,
+) -> str:
+    if is_unresolved(value):
+        return ""
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = source_dir / path
+    path = path.resolve()
+    if not path.is_file():
+        errors.append(f"{label} does not exist: {path}")
+        return ""
+    try:
+        return image_data_uri(path)
+    except (OSError, ValueError) as exc:
+        errors.append(f"{label}: {exc}")
+        return ""
 
 
 def render_html(result: dict[str, Any]) -> str:
@@ -1073,6 +1427,7 @@ def render_html(result: dict[str, Any]) -> str:
         result["timeline"][index : index + page_item_limit]
         for index in range(0, row_count, page_item_limit)
     ] or [[]]
+    support_components = result.get("support_components", [])
     max_page_rows = max(len(page) for page in timeline_pages)
     density = "ultra" if max_page_rows >= 22 else "compact" if max_page_rows >= 18 else "normal"
 
@@ -1145,7 +1500,7 @@ def render_html(result: dict[str, Any]) -> str:
         return "".join(rows)
 
     page_blocks: list[str] = []
-    total_pages = len(timeline_pages)
+    total_pages = len(timeline_pages) + (1 if support_components else 0)
     for page_index, page_items in enumerate(timeline_pages, start=1):
         page_marker = f"{page_index}/{total_pages}"
         sparse_class = " sparse-page" if len(page_items) < 12 else ""
@@ -1175,6 +1530,168 @@ def render_html(result: dict[str, Any]) -> str:
     <div class="backstage"><strong>{backstage_label}</strong> · {backstage or "—"}</div>
     <div class="timecheck"><strong>{time_label}</strong> · {computed['item_minutes']} + {computed['transition_minutes']} = {computed['total_minutes']} min</div>
     <div class="site">{website} · {page_marker}</div>
+  </footer>
+</main>"""
+        )
+
+    if support_components:
+        support_cards: list[str] = []
+
+        def support_card(title: str, body: str, wide: bool = False) -> str:
+            card_class = "support-card wide" if wide else "support-card"
+            return (
+                f'<article class="{card_class}">'
+                f'<h2>{html.escape(title)}</h2>{body}</article>'
+            )
+
+        for component in support_components:
+            if component in {"vpm_qr", "voting_qr"}:
+                continue
+            if component == "timer_rules":
+                timer_rows = []
+                for row in TIMER_RULES:
+                    timer_rows.append(
+                        "<tr>"
+                        f"<td>{html.escape(localized(row['band_zh'], row['band_en'], language))}</td>"
+                        f"<td>{html.escape(localized(row['green_zh'], row['green_en'], language))}</td>"
+                        f"<td>{html.escape(localized(row['yellow_zh'], row['yellow_en'], language))}</td>"
+                        f"<td>{html.escape(localized(row['red_zh'], row['red_en'], language))}</td>"
+                        f"<td>{html.escape(localized(row['bell_zh'], row['bell_en'], language))}</td>"
+                        "</tr>"
+                    )
+                timer_body = (
+                    '<table class="timer-table"><thead><tr>'
+                    f"<th>{html.escape(localized('演讲时长', 'Speech length', language))}</th>"
+                    f"<th>{html.escape(localized('绿牌', 'Green', language))}</th>"
+                    f"<th>{html.escape(localized('黄牌', 'Yellow', language))}</th>"
+                    f"<th>{html.escape(localized('红牌', 'Red', language))}</th>"
+                    f"<th>{html.escape(localized('响铃', 'Bell', language))}</th>"
+                    f"</tr></thead><tbody>{''.join(timer_rows)}</tbody></table>"
+                )
+                support_cards.append(
+                    support_card(
+                        localized("时间官规则", "Timer Rules", language),
+                        timer_body,
+                        wide=True,
+                    )
+                )
+            elif component == "toastmasters_intro":
+                support_cards.append(
+                    support_card(
+                        localized(
+                            "头马国际演讲会",
+                            "Toastmasters International",
+                            language,
+                        ),
+                        f"<p>{html.escape(toastmasters_intro(language))}</p>",
+                    )
+                )
+            elif component == "meeting_boundaries":
+                boundaries = [
+                    localized(
+                        "安静：会议过程中保持安静，手机调至静音或震动。",
+                        "Quiet: keep phones silent or on vibrate during the meeting.",
+                        language,
+                    ),
+                    localized(
+                        "四类禁忌：演讲不涉及政治、宗教、色情或传销。",
+                        "Four boundaries: avoid politics, religion, pornography and pyramid selling.",
+                        language,
+                    ),
+                    localized(
+                        "整洁：结束后带走个人物品与垃圾。",
+                        "Clean: take personal belongings and rubbish when leaving.",
+                        language,
+                    ),
+                ]
+                support_cards.append(
+                    support_card(
+                        localized(
+                            "会议秩序与内容边界",
+                            "Meeting Conduct & Content Boundaries",
+                            language,
+                        ),
+                        "<ul>" + "".join(f"<li>{html.escape(line)}</li>" for line in boundaries) + "</ul>",
+                    )
+                )
+            elif component == "officers":
+                officer_rows = "".join(
+                    f"<div><strong>{html.escape(row['role'])}</strong><span>{html.escape(row['name'])}</span></div>"
+                    for row in club["officers"]
+                )
+                support_cards.append(
+                    support_card(
+                        localized("当届官员团队", "Current Officer Team", language),
+                        f'<div class="officer-list">{officer_rows}</div>',
+                    )
+                )
+            elif component == "club_intro":
+                support_cards.append(
+                    support_card(
+                        localized("俱乐部介绍", "About the Club", language),
+                        "<ul>"
+                        + "".join(
+                            f"<li>{html.escape(line)}</li>" for line in club["club_intro"]
+                        )
+                        + "</ul>",
+                    )
+                )
+            elif component == "join_info":
+                support_cards.append(
+                    support_card(
+                        localized("如何入会", "How to Join", language),
+                        "<ul>"
+                        + "".join(
+                            f"<li>{html.escape(line)}</li>" for line in club["join_info"]
+                        )
+                        + "</ul>",
+                    )
+                )
+
+        qr_items: list[str] = []
+        assets = result.get("_assets", {})
+        if "vpm_qr" in support_components:
+            qr_items.append(
+                '<div class="qr-item">'
+                f'<img src="{html.escape(assets.get("vpm_qr_data_uri", ""), quote=True)}" alt="VPM QR">'
+                f"<strong>{html.escape(localized('入会咨询', 'Join Us', language))}</strong>"
+                "</div>"
+            )
+        if "voting_qr" in support_components:
+            qr_items.append(
+                '<div class="qr-item">'
+                f'<img src="{html.escape(assets.get("voting_qr_data_uri", ""), quote=True)}" alt="Voting QR">'
+                f"<strong>{html.escape(localized('本期投票', 'Meeting Vote', language))}</strong>"
+                "</div>"
+            )
+        if qr_items:
+            support_cards.append(
+                support_card(
+                    localized("二维码", "QR Codes", language),
+                    f'<div class="qr-grid">{"".join(qr_items)}</div>',
+                    wide=True,
+                )
+            )
+
+        support_page_marker = f"{total_pages}/{total_pages}"
+        support_theme = localized("会单信息组件", "Agenda Information", language)
+        page_blocks.append(
+            f"""
+<main class="page support-page lang-{html.escape(language)}">
+  <header class="hero">
+    {"<img class='logo' src='" + logo + "' alt='Toastmasters International'>" if logo else "<div class='logo-fallback'>TOASTMASTERS<br>INTERNATIONAL</div>"}
+    <div>
+      <div class="club">{html.escape(club['name'])}</div>
+      <div class="kicker">{kicker}</div>
+      <div class="theme">{html.escape(support_theme)}</div>
+      <div class="meta">{meta}</div>
+    </div>
+  </header>
+  <section class="support-grid">{"".join(support_cards)}</section>
+  <footer class="footer support-footer">
+    <div><strong>{html.escape(localized('信息附页', 'Information Page', language))}</strong></div>
+    <div class="timecheck">{website}</div>
+    <div class="site">{support_page_marker}</div>
   </footer>
 </main>"""
         )
@@ -1229,6 +1746,26 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 .ultra tbody td {{ padding-top: .72mm; padding-bottom: .72mm; font-size: 2.35mm; }}
 .ultra .section-row td {{ padding-top: .62mm; padding-bottom: .62mm; font-size: 2.3mm; }}
 .ultra .detail {{ font-size: 1.9mm; }}
+.support-grid {{ flex: 1; min-height: 0; margin-top: 3mm; display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; align-content: start; }}
+.support-card {{ border: .35mm solid #d5dde1; border-radius: 3mm; background: white; padding: 3mm; font-size: 2.55mm; line-height: 1.35; }}
+.support-card.wide {{ grid-column: 1 / -1; }}
+.support-card h2 {{ margin: 0 0 1.6mm; color: #772432; font-size: 3.5mm; line-height: 1.15; }}
+.support-card p {{ margin: 0; }}
+.support-card ul {{ margin: 0; padding-left: 4.5mm; }}
+.support-card li + li {{ margin-top: .8mm; }}
+.support-page table {{ height: auto; }}
+.timer-table th, .timer-table td {{ width: auto !important; padding: 1.2mm; border: .25mm solid #dfe5e8; font-size: 2.35mm; text-align: left; }}
+.timer-table th {{ background: #004165; color: white; }}
+.officer-list {{ display: grid; gap: .7mm; }}
+.officer-list div {{ display: grid; grid-template-columns: 1fr 1.2fr; gap: 2mm; padding-bottom: .5mm; border-bottom: .2mm solid #e5eaed; }}
+.officer-list div:last-child {{ border-bottom: 0; }}
+.officer-list span {{ color: #004165; font-weight: 700; }}
+.qr-grid {{ display: flex; justify-content: center; gap: 12mm; }}
+.qr-item {{ display: grid; justify-items: center; gap: 1.2mm; color: #004165; }}
+.qr-item img {{ width: 30mm; height: 30mm; object-fit: contain; image-rendering: auto; }}
+.support-footer {{ margin-top: 3mm; }}
+.lang-bilingual .support-card {{ font-size: 2.25mm; }}
+.lang-bilingual .support-card h2 {{ font-size: 3.1mm; }}
 @media print {{
   html, body {{ background: white; }}
   .page {{ margin: 0; page-break-after: always; break-after: page; }}
@@ -1262,7 +1799,7 @@ def main() -> None:
         print(json.dumps({"ok": False, "errors": [str(exc)]}, ensure_ascii=False, indent=2), file=sys.stderr)
         raise SystemExit(2)
 
-    result, errors, warnings = build_agenda(data)
+    result, errors, warnings = build_agenda(data, source_dir=input_path.parent)
     summary = {
         "ok": not errors,
         "computed": result["computed"],
@@ -1284,7 +1821,12 @@ def main() -> None:
     computed_path = output_dir / "agenda.computed.json"
     markdown_path = output_dir / "agenda.md"
     html_path = output_dir / "agenda.html"
-    computed_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    computed_result = deepcopy(result)
+    computed_result.pop("_assets", None)
+    computed_path.write_text(
+        json.dumps(computed_result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     markdown_path.write_text(render_markdown(result), encoding="utf-8")
     html_path.write_text(render_html(result), encoding="utf-8")
 
