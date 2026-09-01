@@ -931,6 +931,7 @@ def parse_agenda_overrides(
         "label",
         "transition_after",
         "after",
+        "section",
     }
     result: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(data, start=1):
@@ -989,6 +990,15 @@ def parse_agenda_overrides(
                 errors.append(f"agenda override {item_id} after is unresolved")
             else:
                 normalized["after"] = str(row["after"]).strip()
+        if "section" in row:
+            section = str(row["section"]).strip()
+            if section not in SECTION_LABELS:
+                errors.append(
+                    f"agenda override {item_id} section must be opening, first_half, "
+                    "second_half, or closing"
+                )
+            else:
+                normalized["section"] = section
         result[item_id] = normalized
     return result
 
@@ -1055,8 +1065,6 @@ def reorder_agenda_items(
         anchor_index = next(
             index for index, candidate in enumerate(reordered) if candidate["id"] == anchor_id
         )
-        anchor = reordered[anchor_index]
-        item["section"] = anchor["section"]
         reordered.insert(anchor_index + 1, item)
         shared_anchor_tails[requested_anchor] = item_id
     return reordered
@@ -1104,6 +1112,8 @@ def apply_agenda_overrides(
                 item["transition_after_override"] = override["transition_after"]
         if "after" in override:
             moves.append((item_id, override["after"]))
+        if "section" in override:
+            item["section"] = override["section"]
     filtered = [item for item in items if item["id"] not in removed]
     filtered = reorder_agenda_items(filtered, moves, errors)
     remaining_ids = {item["id"] for item in filtered}

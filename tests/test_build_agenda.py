@@ -833,7 +833,7 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(result["computed"]["total_minutes"], 120)
         self.assertEqual(result["computed"]["final_end"], "21:30")
 
-    def test_agenda_override_after_moves_item_and_recloses_timeline(self) -> None:
+    def test_agenda_override_after_moves_item_without_changing_section(self) -> None:
         data = example()
         data["agenda_overrides"] = [
             {"id": "table_topics_evaluation", "after": "table_topics"}
@@ -846,12 +846,46 @@ class AgendaBuilderTests(unittest.TestCase):
         evaluation_index = ids.index("table_topics_evaluation")
         self.assertEqual(evaluation_index, table_topics_index + 1)
         self.assertLess(evaluation_index, ids.index("photo_break"))
-        self.assertEqual(
-            result["timeline"][evaluation_index]["section"],
-            result["timeline"][table_topics_index]["section"],
-        )
+        self.assertEqual(result["timeline"][table_topics_index]["section"], "first_half")
+        self.assertEqual(result["timeline"][evaluation_index]["section"], "second_half")
         self.assertEqual(result["computed"]["total_minutes"], 120)
         self.assertEqual(result["computed"]["final_end"], "21:30")
+
+    def test_agenda_override_accepts_all_explicit_sections(self) -> None:
+        data = example()
+        expected_sections = {
+            "prepared_speech:1": "opening",
+            "timer_intro": "first_half",
+            "table_topics": "second_half",
+            "prepared_evaluation:1": "closing",
+        }
+        data["agenda_overrides"] = [
+            {"id": item_id, "section": section}
+            for item_id, section in expected_sections.items()
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+
+        by_id = {row["id"]: row for row in result["timeline"]}
+        for item_id, section in expected_sections.items():
+            with self.subTest(item_id=item_id, section=section):
+                self.assertEqual(by_id[item_id]["section"], section)
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+        self.assertEqual(result["computed"]["final_end"], "21:30")
+
+    def test_agenda_override_rejects_invalid_section(self) -> None:
+        data = example()
+        data["agenda_overrides"] = [
+            {"id": "table_topics_evaluation", "section": "intermission"}
+        ]
+        _, errors, _ = BUILDER.build_agenda(data)
+        self.assertTrue(
+            any(
+                "section must be opening, first_half, second_half, or closing" in error
+                for error in errors
+            ),
+            errors,
+        )
 
     def test_agenda_override_after_rejects_invalid_reorder_graphs(self) -> None:
         baseline, baseline_errors, _ = BUILDER.build_agenda(example())
@@ -922,14 +956,71 @@ class AgendaBuilderTests(unittest.TestCase):
             ],
         )
         self.assertLess(ids.index("prepared_evaluation:3"), ids.index("photo_break"))
-        anchor_section = result["timeline"][table_topics_index]["section"]
         by_id = {row["id"]: row for row in result["timeline"]}
         for item_id in (
             "prepared_evaluation:1",
             "prepared_evaluation:2",
             "prepared_evaluation:3",
         ):
-            self.assertEqual(by_id[item_id]["section"], anchor_section)
+            self.assertEqual(by_id[item_id]["section"], "second_half")
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+        self.assertEqual(result["computed"]["final_end"], "21:30")
+
+    def test_marathon_style_reorder_chain_preserves_original_sections(self) -> None:
+        data = example()
+        data["impromptu"] = None
+        data["prepared_speeches"] = [
+            {
+                "speaker": f"演讲者{index}",
+                "title": f"演讲题目{index}",
+                "evaluator": f"点评人{index}",
+            }
+            for index in range(1, 6)
+        ]
+        chain = [
+            ("prepared_evaluation:1", "prepared_speech:1"),
+            ("prepared_speech:2", "prepared_evaluation:1"),
+            ("prepared_evaluation:2", "prepared_speech:2"),
+            ("prepared_speech:3", "prepared_evaluation:2"),
+            ("prepared_evaluation:3", "prepared_speech:3"),
+            ("prepared_speech:4", "prepared_evaluation:3"),
+            ("prepared_evaluation:4", "prepared_speech:4"),
+            ("prepared_speech:5", "prepared_evaluation:4"),
+            ("prepared_evaluation:5", "prepared_speech:5"),
+            ("photo_break", "prepared_evaluation:5"),
+            ("grammarian_report", "photo_break"),
+            ("ah_counter_report", "grammarian_report"),
+            ("timer_report", "ah_counter_report"),
+            ("sharing", "timer_report"),
+            ("general_evaluation", "sharing"),
+            ("awards", "general_evaluation"),
+            ("president_closing", "awards"),
+        ]
+        data["agenda_overrides"] = [
+            {"id": item_id, "after": anchor_id}
+            for item_id, anchor_id in reversed(chain)
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(result["layout"], "marathon")
+
+        ids = [row["id"] for row in result["timeline"]]
+        expected_tail = ["prepared_speech:1", *(item_id for item_id, _ in chain)]
+        self.assertEqual(ids[ids.index("prepared_speech:1") :], expected_tail)
+
+        by_id = {row["id"]: row for row in result["timeline"]}
+        for index in range(1, 6):
+            self.assertEqual(
+                by_id[f"prepared_evaluation:{index}"]["section"],
+                "second_half",
+            )
+        for item_id in (
+            "sharing",
+            "general_evaluation",
+            "awards",
+            "president_closing",
+        ):
+            self.assertEqual(by_id[item_id]["section"], "closing")
         self.assertEqual(result["computed"]["total_minutes"], 120)
         self.assertEqual(result["computed"]["final_end"], "21:30")
 

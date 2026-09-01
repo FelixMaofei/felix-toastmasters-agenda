@@ -49,6 +49,7 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 - `name`：首次初始化或未加载 profile 时必填。
 - `default_location`：首次初始化或未加载 profile 时必填；本期 `meeting.location` 可覆盖。
 - `language`：`zh`、`en` 或 `bilingual`；首次初始化或未加载 profile 时必填。
+- “你直接做”“我不懂配置”不等于已经选择语言或固定信息组件；仍需与其他缺项合并询问一次。
 
 生成器会先合并 profile，再做必填验证。因此使用 `--club-profile` 后，日常 meeting JSON 可以完全省略 `club`，只保留本期事实。
 
@@ -259,9 +260,11 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 ```
 
 - `title`、`owner`、`minutes` 必填。
+- `owner` 必须是本期真实负责人姓名；不能用“Toastmaster”“主持人”“待定”等角色称呼代替。材料没有姓名时询问用户。
 - `details` 可选，用字符串或字符串数组表达主题、形式或过程要点；进入 `feature` 版式时显示在专题舞台内。
 - `after` 可省略，默认放在嘉宾介绍之后。
 - 可用锚点包括 `guest_introduction`、`prepared_speech:1`、`table_topics`、`photo_break`、`prepared_evaluation:1`、`sharing` 等。
+- 特殊环节按数组顺序取得稳定 ID：第一项为 `special:1`，第二项为 `special:2`，以此类推；后续覆盖和锚点使用这个 ID。
 
 ## 8. 任意环节统一覆盖（推荐）
 
@@ -275,7 +278,7 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
     {"id": "photo_break", "label": "合影＋茶歇", "minutes": 8},
     {"id": "ah_counter_intro", "enabled": false},
     {"id": "prepared_evaluation:1", "owner": "新点评人", "transition_after": 0.5},
-    {"id": "table_topics_evaluation", "after": "table_topics"}
+    {"id": "table_topics_evaluation", "after": "table_topics", "section": "first_half"}
   ]
 }
 ```
@@ -288,9 +291,10 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 - `label`：本期显示名称；
 - `enabled`：`false` 明确取消该环节；
 - `transition_after`：该环节后的转场，支持 0.5 分钟递增。
-- `after`：本期明确顺序与默认流程不同时，把该环节移动到另一个已生成环节之后；程序同时让它进入锚点所在阶段。
+- `after`：本期明确顺序与默认流程不同时，把该环节移动到另一个已生成环节之后；只改变顺序，不自动改变原阶段。
+- `section`：仅在用户同时改变环节所属阶段时使用，可为 `opening / first_half / second_half / closing`。
 
-覆盖在全部标准、角色和特殊环节完成组装后应用，然后程序按本期顺序重新求解整场时间。不允许直接覆盖 `start / end`，它们始终由程序派生。`after` 不能指向自身、已取消环节或形成循环。
+覆盖在全部标准、角色和特殊环节完成组装后应用，然后程序按本期顺序重新求解整场时间。不允许直接覆盖 `start / end`，它们始终由程序派生。`after` 只改变相对顺序，默认保留环节原来的阶段；确实要跨阶段时再同时写 `section`。`after` 不能指向自身、已取消环节或形成循环。
 
 ## 8.1 旧版标准环节覆盖（兼容）
 
