@@ -29,6 +29,7 @@ FILES = [
 ]
 
 DIRECTORIES = [
+    "assets/fonts/noto-sans-sc",
     "assets/icons/tabler",
     "assets/layouts",
     "assets/themes",

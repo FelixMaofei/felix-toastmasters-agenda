@@ -9,6 +9,7 @@ import hashlib
 import html
 import json
 import math
+import os
 import re
 import shutil
 import sys
@@ -20,7 +21,13 @@ from typing import Any
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOGO = SKILL_ROOT / "assets" / "toastmasters-logo.png"
-PROFILE_ROOT = Path.home() / ".toastmasters-agenda" / "profiles"
+PROFILE_ROOT_OVERRIDE = os.environ.get("TOASTMASTERS_AGENDA_PROFILE_ROOT")
+if PROFILE_ROOT_OVERRIDE:
+    PROFILE_ROOT = Path(PROFILE_ROOT_OVERRIDE).expanduser()
+    if not PROFILE_ROOT.is_absolute():
+        raise ValueError("TOASTMASTERS_AGENDA_PROFILE_ROOT must be an absolute path")
+else:
+    PROFILE_ROOT = Path.home() / ".toastmasters-agenda" / "profiles"
 
 UNRESOLVED = {"", "?", "？", "🌺", "待定", "待确认", "招募中", "tbd", "pending", "todo"}
 LANGUAGES = {"zh", "en", "bilingual"}

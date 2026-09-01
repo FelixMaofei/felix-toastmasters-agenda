@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html as html_lib
 import importlib.util
 import json
 import re
@@ -278,8 +279,12 @@ class AgendaBuilderTests(unittest.TestCase):
         rendered = BUILDER.render_output_html(result, "editorial")
         self.assertIn('id="agenda-audit-result"', rendered)
         self.assertIn("data:image/png;base64,", rendered)
+        self.assertIn("data:font/woff2;base64,", rendered)
         self.assertIn('<svg class="ti ', rendered)
         self.assertNotIn("assets/icons/", rendered)
+        self.assertNotIn("url(./files/", rendered)
+        self.assertNotIn("{{FONT_CSS}}", rendered)
+        self.assertLess(rendered.count("data:font/woff2;base64,"), 40)
         self.assertNotIn("{{BODY}}", rendered)
         previous = -1
         for item in result["timeline"]:
@@ -371,6 +376,28 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertIn("第一行", rendered)
         self.assertIn("第二行", rendered)
 
+    def test_editorial_structures_club_facts_without_dropping_text(self) -> None:
+        data = example()
+        facts = [
+            "定位：助力会员提升沟通力",
+            "愿景：帮助会员成长",
+            "特色：真实、温暖、有趣",
+            "关键词：共创",
+            "价值观：正直、尊重、服务、卓越",
+        ]
+        data["club"]["custom_support_blocks"] = [
+            {"id": "club_facts", "title": "俱乐部信息", "lines": facts}
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        rendered = BUILDER.render_output_html(result, "editorial")
+        self.assertIn('class="club-facts"', rendered)
+        self.assertIn('class="ti fact-icon"', rendered)
+        for fact in facts:
+            label, value = fact.split("：", 1)
+            self.assertIn(f"{label}：", rendered)
+            self.assertIn(value, rendered)
+
     def test_editorial_uses_shared_boundaries_and_escapes_invalid_date(self) -> None:
         data = example()
         data["meeting"]["date"] = '<img src=x onerror="alert(1)">'
@@ -378,8 +405,9 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(errors, [])
         editorial = BUILDER.render_output_html(result, "editorial")
         classic = BUILDER.render_html(result)
+        editorial_text = html_lib.unescape(re.sub(r"<[^>]+>", "", editorial))
         for expected in ("四类禁忌", "政治、宗教、色情或传销"):
-            self.assertIn(expected, editorial)
+            self.assertIn(expected, editorial_text)
             self.assertIn(expected, classic)
         self.assertNotIn('<img src=x onerror="alert(1)">', editorial)
         self.assertIn("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;", editorial)

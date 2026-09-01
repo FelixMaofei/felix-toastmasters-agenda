@@ -2,6 +2,8 @@
 
 适用 WorkBuddy、本地模型或执行稳定性未知的 Agent。目标是让模型只负责提取事实，不参与时间计算、HTML 设计或 A4 适配。
 
+Skill 已内置 Logo、图标、主题纹理和可合法分发的中英文字体。准备和导出全程不需联网，也不需本地模型改 CSS。
+
 ## 绝对不要做
 
 - 不要求用户自己写 JSON；
@@ -10,6 +12,14 @@
 - 不要修改 `agenda.computed.json`、`agenda.html` 或模板 CSS；
 - 不要联网找图、换图标、调色或另做一张图；
 - 不要跳过 `finalize`的视觉审计直接打印。
+- 不要用 `find ~` 或其他宽泛搜索寻找 Skill、profile 或历史会单；
+- 不要读取 `scripts/*.py` 源码、测试或历史输出，只执行 `scripts/run_agenda.py`。
+
+## 先确定 Skill 目录
+
+- WorkBuddy 默认直接使用 `~/.workbuddy/skills/felix-toastmasters-agenda`；
+- 路径不存在时，再使用当前平台加载 Skill 时显示的 Base directory；
+- 不向用户询问安装路径，不搜索整个主目录。
 
 ## 第 0 步：只检查一次环境
 
