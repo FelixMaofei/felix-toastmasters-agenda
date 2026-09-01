@@ -91,6 +91,26 @@ CLASSIC_VISUAL_AUDIT_SCRIPT = r"""
           }
         });
       });
+      document.querySelectorAll(".location-cell span").forEach((location, index) => {
+        const style = getComputedStyle(location);
+        if (style.whiteSpace === "nowrap" || style.textOverflow === "ellipsis") {
+          fail("location-truncation", index);
+        }
+        if (location.scrollWidth > location.clientWidth + 1) {
+          fail("location-horizontal-overflow", index);
+        }
+        if (location.scrollHeight > location.clientHeight + 1) {
+          fail("location-vertical-overflow", index);
+        }
+        const cell = location.closest(".location-cell");
+        if (cell) {
+          const locationRect = location.getBoundingClientRect();
+          const cellRect = cell.getBoundingClientRect();
+          if (locationRect.top < cellRect.top - 1 || locationRect.bottom > cellRect.bottom + 1) {
+            fail("location-cell-bounds", index);
+          }
+        }
+      });
     } catch (error) {
       fail("audit-runtime", error && error.stack ? error.stack : String(error));
     }
@@ -2839,6 +2859,7 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 .meta-cell:last-child {{ border-right: 0; }}
 .meta-cell b {{ color: #07366a; font-size: 2.4mm; }}
 .meta-cell span {{ color: #1d2730; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.meta-cell.location-cell span {{ overflow: visible; text-overflow: clip; white-space: normal; line-height: 1.15; overflow-wrap: anywhere; }}
 .meta-cell .word-value {{ color: #b47b00; font-size: 3.8mm; font-weight: 800; }}
 .main-grid {{ flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(51mm,.31fr) minmax(0,.69fr); gap: 2.4mm; align-items: stretch; }}
 .backstage-strip {{ display: none; min-height: 8mm; margin-bottom: 1.8mm; padding: 1.4mm 2mm; border: .3mm solid #174f7f; border-left: 2mm solid #d6a329; align-items: center; gap: 3mm; font-size: 2.25mm; }}

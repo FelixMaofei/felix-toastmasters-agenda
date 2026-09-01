@@ -156,6 +156,43 @@ class ClassicBrowserAuditTests(unittest.TestCase):
         mutated = self.source.replace("</head>", override + "</head>")
         self.assert_audit_failure(mutated, "owner-alignment-mismatch")
 
+    def large_text_long_location_source(self) -> str:
+        data = json.loads(
+            (ROOT / "examples" / "meeting.example.json").read_text(encoding="utf-8")
+        )
+        long_location = (
+            "深圳南山海岸城共享会议室 3A / Zoom 861 204 7788 / "
+            "Meeting Room and Online"
+        )
+        data["club"]["default_location"] = long_location
+        data["meeting"]["location"] = long_location
+        data["meeting"]["visual_preferences"] = {
+            "text_size": "large",
+            "feature_emphasis": "standard",
+            "owner_alignment": "default",
+        }
+        data["club"]["support_components"] = []
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        return BUILDER.render_output_html(result, "classic")
+
+    def test_large_text_wraps_long_location_without_truncation(self) -> None:
+        source = self.large_text_long_location_source()
+        self.assertIn("meta-cell location-cell", source)
+        self.assertIn("text-size-large", source)
+        self.assertIn(".meta-cell.location-cell span", source)
+        report = self.audit(source)
+        self.assertIs(report.get("ok"), True)
+
+    def test_audit_rejects_vertically_clipped_long_location(self) -> None:
+        source = self.large_text_long_location_source()
+        override = (
+            "<style>.location-cell span{max-height:4px!important;"
+            "overflow:hidden!important}</style>"
+        )
+        mutated = source.replace("</head>", override + "</head>")
+        self.assert_audit_failure(mutated, "location-vertical-overflow")
+
 
 class EditorialBrowserAuditTests(unittest.TestCase):
     @classmethod
