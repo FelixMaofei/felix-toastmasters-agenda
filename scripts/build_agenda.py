@@ -42,7 +42,66 @@ VISUAL_THEMES = {
     "leadership",
     "celebration",
 }
+VISUAL_TEXT_SIZES = {"compact", "standard", "large"}
+FEATURE_EMPHASIS_LEVELS = {"compact", "standard", "strong"}
+OWNER_ALIGNMENTS = {"default", "left", "center"}
 HTML_RENDERERS = {"auto", "classic", "editorial"}
+
+CLASSIC_VISUAL_AUDIT_SCRIPT = r"""
+<script id="agenda-audit-result" type="application/json"></script>
+<script>
+(() => {
+  const report = { ok: true, failures: [] };
+  const fail = (code, detail) => {
+    report.ok = false;
+    report.failures.push({ code, detail });
+  };
+  const inspect = async () => {
+    try {
+      if (document.fonts && document.fonts.ready) await document.fonts.ready;
+      const pages = [...document.querySelectorAll(".page")];
+      if (pages.length !== 1) fail("page-count", pages.length);
+      pages.forEach((page, pageIndex) => {
+        if (page.scrollWidth > page.clientWidth + 1) {
+          fail("page-horizontal-overflow", pageIndex);
+        }
+      });
+      document.querySelectorAll(".timeline table").forEach((table, tableIndex) => {
+        const headers = [...table.querySelectorAll("thead th")].map((cell) => cell.getBoundingClientRect());
+        const headerOwner = table.querySelector("thead th:nth-child(3)");
+        const expectedOwnerAlign = headerOwner ? getComputedStyle(headerOwner).textAlign : "";
+        table.querySelectorAll("tbody tr:not(.section-row)").forEach((row, rowIndex) => {
+          const cells = [...row.cells];
+          if (cells.length !== headers.length) {
+            fail("timeline-column-count", { table: tableIndex, row: rowIndex, cells: cells.length });
+            return;
+          }
+          cells.forEach((cell, columnIndex) => {
+            const actual = cell.getBoundingClientRect();
+            const expected = headers[columnIndex];
+            if (expected && (Math.abs(actual.left - expected.left) > .75 || Math.abs(actual.right - expected.right) > .75)) {
+              fail("timeline-column-edge", { table: tableIndex, row: rowIndex, column: columnIndex });
+            }
+            if (cell.scrollWidth > cell.clientWidth + 1) {
+              fail("timeline-cell-overflow", { table: tableIndex, row: rowIndex, column: columnIndex });
+            }
+          });
+          if (cells[2] && expectedOwnerAlign && getComputedStyle(cells[2]).textAlign !== expectedOwnerAlign) {
+            fail("owner-alignment-mismatch", { table: tableIndex, row: rowIndex });
+          }
+        });
+      });
+    } catch (error) {
+      fail("audit-runtime", error && error.stack ? error.stack : String(error));
+    }
+    const output = document.querySelector("#agenda-audit-result");
+    if (output) output.textContent = JSON.stringify(report);
+    document.documentElement.dataset.agendaAudit = report.ok ? "ok" : "failed";
+  };
+  window.addEventListener("load", inspect, { once: true });
+})();
+</script>
+"""
 
 STANDARD_TYPES = {
     "rules",
@@ -379,6 +438,50 @@ def normalize_support_text(value: Any) -> list[str]:
         return []
     text = str(value).strip()
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def parse_visual_preferences(value: Any, errors: list[str]) -> dict[str, str]:
+    defaults = {
+        "text_size": "standard",
+        "feature_emphasis": "standard",
+        "owner_alignment": "default",
+    }
+    if value is None:
+        return defaults
+    if not isinstance(value, dict):
+        errors.append("meeting.visual_preferences must be an object")
+        return defaults
+    unknown = set(value) - set(defaults)
+    if unknown:
+        errors.append(
+            "meeting.visual_preferences has unsupported fields: "
+            + ", ".join(sorted(unknown))
+        )
+    text_size = str(value.get("text_size", "standard")).strip().lower()
+    feature_emphasis = str(
+        value.get("feature_emphasis", "standard")
+    ).strip().lower()
+    owner_alignment = str(value.get("owner_alignment", "default")).strip().lower()
+    if text_size not in VISUAL_TEXT_SIZES:
+        errors.append(
+            "meeting.visual_preferences.text_size must be compact, standard, or large"
+        )
+        text_size = "standard"
+    if feature_emphasis not in FEATURE_EMPHASIS_LEVELS:
+        errors.append(
+            "meeting.visual_preferences.feature_emphasis must be compact, standard, or strong"
+        )
+        feature_emphasis = "standard"
+    if owner_alignment not in OWNER_ALIGNMENTS:
+        errors.append(
+            "meeting.visual_preferences.owner_alignment must be default, left, or center"
+        )
+        owner_alignment = "default"
+    return {
+        "text_size": text_size,
+        "feature_emphasis": feature_emphasis,
+        "owner_alignment": owner_alignment,
+    }
 
 
 def normalized_club_name(value: Any) -> str:
@@ -810,6 +913,211 @@ def parse_overrides(data: Any, errors: list[str]) -> dict[str, dict[str, Any]]:
                 normalized["transition_after"] = transition
         result[item_id] = normalized
     return result
+
+
+def parse_agenda_overrides(
+    data: Any, errors: list[str]
+) -> dict[str, dict[str, Any]]:
+    if data is None:
+        return {}
+    if not isinstance(data, list):
+        errors.append("agenda_overrides must be an array")
+        return {}
+    allowed_fields = {
+        "id",
+        "enabled",
+        "minutes",
+        "owner",
+        "label",
+        "transition_after",
+        "after",
+    }
+    result: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(data, start=1):
+        if not isinstance(row, dict):
+            errors.append(f"agenda_overrides[{index}] must be an object")
+            continue
+        item_id = str(row.get("id", "")).strip()
+        if not item_id:
+            errors.append(f"agenda_overrides[{index}] is missing id")
+            continue
+        if item_id in result:
+            errors.append(f"duplicate agenda override: {item_id}")
+            continue
+        unknown = set(row) - allowed_fields
+        if unknown:
+            errors.append(
+                f"agenda override {item_id} has unsupported fields: "
+                + ", ".join(sorted(unknown))
+            )
+        normalized = {"id": item_id}
+        if "enabled" in row:
+            if not isinstance(row["enabled"], bool):
+                errors.append(f"agenda override {item_id} enabled must be a boolean")
+            else:
+                normalized["enabled"] = row["enabled"]
+        if "minutes" in row:
+            minutes = positive_minutes(row["minutes"])
+            if minutes is None:
+                errors.append(
+                    f"agenda override {item_id} minutes must be positive "
+                    "in 0.5-minute increments"
+                )
+            else:
+                normalized["minutes"] = minutes
+        if "transition_after" in row:
+            transition = nonnegative_minutes(row["transition_after"])
+            if transition is None:
+                errors.append(
+                    f"agenda override {item_id} transition_after must be nonnegative "
+                    "in 0.5-minute increments"
+                )
+            else:
+                normalized["transition_after"] = transition
+        if "owner" in row:
+            if is_unresolved(row["owner"]):
+                errors.append(f"agenda override {item_id} owner is unresolved")
+            else:
+                normalized["owner"] = str(row["owner"]).strip()
+        if "label" in row:
+            if is_unresolved(row["label"]):
+                errors.append(f"agenda override {item_id} label is unresolved")
+            else:
+                normalized["label"] = str(row["label"]).strip()
+        if "after" in row:
+            if is_unresolved(row["after"]):
+                errors.append(f"agenda override {item_id} after is unresolved")
+            else:
+                normalized["after"] = str(row["after"]).strip()
+        result[item_id] = normalized
+    return result
+
+
+def reorder_agenda_items(
+    items: list[dict[str, Any]],
+    moves: list[tuple[str, str]],
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    if not moves:
+        return items
+    existing_ids = {item["id"] for item in items}
+    move_map = dict(moves)
+    invalid = False
+    for item_id, anchor_id in moves:
+        if item_id not in existing_ids:
+            errors.append(f"agenda reorder references missing item: {item_id!r}")
+            invalid = True
+        if anchor_id not in existing_ids:
+            errors.append(
+                f"agenda override {item_id} references missing after anchor: {anchor_id!r}"
+            )
+            invalid = True
+        if item_id == anchor_id:
+            errors.append(f"agenda override {item_id} cannot be placed after itself")
+            invalid = True
+
+    for start in move_map:
+        seen: set[str] = set()
+        cursor = start
+        while cursor in move_map:
+            if cursor in seen:
+                errors.append(f"agenda reorder contains a cycle involving {start!r}")
+                invalid = True
+                break
+            seen.add(cursor)
+            cursor = move_map[cursor]
+    if invalid:
+        return items
+
+    ordered_moves: list[tuple[str, str]] = []
+    visited: set[str] = set()
+
+    def append_after_anchor(item_id: str) -> None:
+        if item_id in visited:
+            return
+        anchor_id = move_map[item_id]
+        if anchor_id in move_map:
+            append_after_anchor(anchor_id)
+        visited.add(item_id)
+        ordered_moves.append((item_id, anchor_id))
+
+    for item_id, _ in moves:
+        append_after_anchor(item_id)
+
+    reordered = list(items)
+    shared_anchor_tails: dict[str, str] = {}
+    for item_id, requested_anchor in ordered_moves:
+        anchor_id = shared_anchor_tails.get(requested_anchor, requested_anchor)
+        item_index = next(
+            index for index, item in enumerate(reordered) if item["id"] == item_id
+        )
+        item = reordered.pop(item_index)
+        anchor_index = next(
+            index for index, candidate in enumerate(reordered) if candidate["id"] == anchor_id
+        )
+        anchor = reordered[anchor_index]
+        item["section"] = anchor["section"]
+        reordered.insert(anchor_index + 1, item)
+        shared_anchor_tails[requested_anchor] = item_id
+    return reordered
+
+
+def apply_agenda_overrides(
+    items: list[dict[str, Any]],
+    overrides: dict[str, dict[str, Any]],
+    standard_overrides: dict[str, dict[str, Any]],
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    by_id = {item["id"]: item for item in items}
+    removed: set[str] = set()
+    moves: list[tuple[str, str]] = []
+    for item_id, override in overrides.items():
+        item = by_id.get(item_id)
+        if item is None:
+            errors.append(f"agenda override references missing item: {item_id!r}")
+            continue
+        legacy = standard_overrides.get(item_id, {})
+        overlapping = (set(override) - {"id"}) & set(legacy)
+        if overlapping:
+            errors.append(
+                f"agenda item {item_id} is overridden twice for: "
+                + ", ".join(sorted(overlapping))
+            )
+            continue
+        if override.get("enabled") is False:
+            removed.add(item_id)
+            continue
+        if "minutes" in override:
+            item["duration"] = override["minutes"]
+            item["duration_locked"] = True
+            item["computed_flexible"] = False
+        if "owner" in override:
+            item["owner"] = override["owner"]
+        if "label" in override:
+            item["label"] = override["label"]
+        if "transition_after" in override:
+            if item.get("transition_after_override") is not None:
+                errors.append(
+                    f"transition for {item_id} is defined twice; keep one override"
+                )
+            else:
+                item["transition_after_override"] = override["transition_after"]
+        if "after" in override:
+            moves.append((item_id, override["after"]))
+    filtered = [item for item in items if item["id"] not in removed]
+    filtered = reorder_agenda_items(filtered, moves, errors)
+    remaining_ids = {item["id"] for item in filtered}
+    for item in filtered:
+        item_id = str(item["id"])
+        if item_id.startswith("prepared_evaluation:"):
+            number = item_id.split(":", 1)[1]
+            if f"prepared_speech:{number}" not in remaining_ids:
+                errors.append(
+                    f"{item_id} remains but prepared_speech:{number} was removed"
+                )
+        if item_id == "table_topics_evaluation" and "table_topics" not in remaining_ids:
+            errors.append("table_topics_evaluation remains but table_topics was removed")
+    return filtered
 
 
 def parse_transition_overrides(
@@ -1439,6 +1747,9 @@ def build_agenda(
     if not isinstance(meeting, dict):
         errors.append("meeting must be an object")
         meeting = {}
+    visual_preferences = parse_visual_preferences(
+        meeting.get("visual_preferences"), errors
+    )
     for field in ("number", "date", "start"):
         if is_unresolved(meeting.get(field)):
             errors.append(f"meeting.{field} is required")
@@ -1548,6 +1859,9 @@ def build_agenda(
     role_order, roles = parse_roles(normalized.get("roles"), errors)
     backstage = parse_backstage(normalized.get("backstage"), errors)
     overrides = parse_overrides(normalized.get("standard_overrides"), errors)
+    agenda_overrides = parse_agenda_overrides(
+        normalized.get("agenda_overrides"), errors
+    )
     transition_overrides = parse_transition_overrides(
         normalized.get("transition_overrides"), errors
     )
@@ -1558,6 +1872,12 @@ def build_agenda(
         role_order,
         roles,
         backstage,
+        overrides,
+        errors,
+    )
+    items = apply_agenda_overrides(
+        items,
+        agenda_overrides,
         overrides,
         errors,
     )
@@ -1664,6 +1984,7 @@ def build_agenda(
                 "manager",
                 "president",
                 "approved_overtime_minutes",
+                "visual_preferences",
             )
             if key in meeting
         },
@@ -1676,6 +1997,8 @@ def build_agenda(
         "layout": layout,
         "feature_item": feature_item_id,
         "visual_theme": visual_theme,
+        "visual_preferences": visual_preferences,
+        "agenda_overrides": list(agenda_overrides.values()),
         "_assets": {
             "vpm_qr_data_uri": vpm_qr_data,
             "voting_qr_data_uri": voting_qr_data,
@@ -1938,6 +2261,12 @@ def render_html(result: dict[str, Any]) -> str:
     layout = result.get("layout", "standard")
     feature_item_id = result.get("feature_item")
     visual_theme = result.get("visual_theme", "general")
+    visual_preferences = result.get("visual_preferences", {})
+    text_size = str(visual_preferences.get("text_size", "standard"))
+    feature_emphasis = str(
+        visual_preferences.get("feature_emphasis", "standard")
+    )
+    owner_alignment = str(visual_preferences.get("owner_alignment", "default"))
     theme_art = result.get("_assets", {}).get("theme_art_data_uri", "")
     logo = image_data_uri(DEFAULT_LOGO)
     row_count = len(result["timeline"])
@@ -2032,20 +2361,17 @@ def render_html(result: dict[str, Any]) -> str:
                 )
                 duration = format_minutes(item["duration"])
                 rows.append(
-                    '<tr class="feature-highlight"><td colspan="4">'
-                    f'<div class="feature-highlight-grid" data-minutes="{duration}">'
-                    f'<div class="feature-time">{html.escape(item["start"])}</div>'
-                    '<div class="feature-copy">'
+                    f'<tr class="feature-highlight" data-minutes="{duration}">'
+                    f'<td class="feature-time time">{html.escape(item["start"])}</td>'
+                    '<td class="feature-copy activity">'
                     f'<strong>{html.escape(item["label"])}</strong>{feature_details_html}'
-                    "</div>"
-                    '<div class="feature-owner">'
-                    f'<small>{html.escape(localized("主讲", "Lead", language))}</small>'
+                    "</td>"
+                    '<td class="feature-owner owner">'
                     f'<strong>{html.escape(item["owner"])}</strong>'
-                    "</div>"
-                    '<div class="feature-duration">'
+                    "</td>"
+                    '<td class="feature-duration duration">'
                     f'<strong>{duration}</strong><span>min</span>'
-                    "</div>"
-                    "</div></td></tr>"
+                    "</td></tr>"
                 )
                 continue
             rows.append(
@@ -2179,7 +2505,7 @@ def render_html(result: dict[str, Any]) -> str:
         )
         page_blocks.append(
             f"""
-<main class="page {density} lang-{html.escape(language)}{sparse_class}{mode_class}{theme_art_class} layout-{html.escape(layout)} visual-{html.escape(visual_theme)}">
+<main class="page {density} lang-{html.escape(language)}{sparse_class}{mode_class}{theme_art_class} layout-{html.escape(layout)} visual-{html.escape(visual_theme)} text-size-{html.escape(text_size)} feature-emphasis-{html.escape(feature_emphasis)} owner-align-{html.escape(owner_alignment)}">
   <div class="brand-ribbon" aria-hidden="true"><span></span><span></span><span></span></div>
   <header class="masthead">
     {"<img class='logo' src='" + logo + "' alt='Toastmasters International'>" if logo else "<div class='logo-fallback'>TOASTMASTERS<br>INTERNATIONAL</div>"}
@@ -2425,6 +2751,7 @@ def render_html(result: dict[str, Any]) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="agenda-page-count" content="{total_pages}">
+<meta name="agenda-visual-audit" content="required">
 <title>{html.escape(club['name'])} · {kicker}</title>
 <style>
 @page {{ size: A4 portrait; margin: 0; }}
@@ -2447,8 +2774,12 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 .time {{ color: #b17b00; font-weight: 900; }}
 .activity {{ font-weight: 750; }}
 .detail {{ margin-top: .3mm; color: #62727d; font-size: 1.95mm; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-.owner {{ color: #004165; font-weight: 700; }}
+.owner {{ color: #004165; font-weight: 700; text-align: left; }}
 .duration {{ text-align: right; color: #5a6670; white-space: nowrap; }}
+.owner-align-left thead th:nth-child(3),
+.owner-align-left tbody td.owner {{ text-align: left; }}
+.owner-align-center thead th:nth-child(3),
+.owner-align-center tbody td.owner {{ text-align: center; }}
 .footer {{ margin-top: 2mm; background: #004165; color: white; border-radius: 2mm; padding: 1.8mm 2.4mm; display: grid; grid-template-columns: minmax(0,1.7fr) minmax(0,1fr) auto; gap: 2mm; align-items: center; font-size: 2.3mm; }}
 .footer strong {{ color: #F2DF74; }}
 .backstage {{ white-space: normal; overflow: visible; line-height: 1.18; }}
@@ -2567,6 +2898,19 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 .visual-voice .masthead::after {{ background: repeating-radial-gradient(ellipse at 90% 50%,transparent 0 4mm,color-mix(in srgb,var(--theme-accent) 28%,transparent) 4.2mm 4.5mm,transparent 4.7mm 8mm); }}
 .visual-leadership .masthead::after {{ background: linear-gradient(135deg,transparent 42%,color-mix(in srgb,var(--theme-accent) 24%,transparent) 42% 44%,transparent 44% 56%,color-mix(in srgb,var(--theme-accent) 18%,transparent) 56% 58%,transparent 58%); }}
 .visual-celebration .masthead::after {{ background: radial-gradient(circle,color-mix(in srgb,var(--theme-accent) 42%,transparent) 0 1mm,transparent 1.2mm); background-size: 9mm 9mm; transform: rotate(12deg); }}
+.text-size-large .meta-cell {{ font-size: 2.48mm; }}
+.text-size-large .meta-cell b {{ font-size: 2.55mm; }}
+.text-size-large .timeline tbody td {{ font-size: 2.32mm; }}
+.text-size-large .timeline .section-row td {{ font-size: 2.48mm; }}
+.text-size-large .timeline .detail {{ font-size: 1.95mm; }}
+.text-size-large .module {{ font-size: 2.28mm; }}
+.text-size-large .module h2 {{ font-size: 2.95mm; }}
+.text-size-large .timer-rule span,
+.text-size-large .timer-rule small {{ font-size: 2mm; }}
+.text-size-large .footer {{ font-size: 2.38mm; }}
+.text-size-compact .meta-cell {{ font-size: 2.2mm; }}
+.text-size-compact .timeline tbody td {{ font-size: 2.08mm; }}
+.text-size-compact .module {{ font-size: 2.02mm; }}
 .theme-art {{ position: absolute; z-index: 0; right: 0; top: 0; width: 58mm; height: 32mm; object-fit: contain; object-position: right top; opacity: .72; }}
 .has-theme-art .title-block {{ padding-right: 42mm; }}
 .layout-feature .main-grid {{ grid-template-columns: minmax(0,.72fr) minmax(48mm,.28fr); }}
@@ -2579,21 +2923,28 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 .layout-feature .timeline .type-special .owner,
 .layout-feature .timeline .type-special .duration,
 .layout-feature .timeline .type-special .detail {{ color: #f2df74; }}
-.layout-feature .feature-highlight td {{ padding: 0; background: #772432; color: #fff; border-bottom-color: #772432; }}
-.feature-highlight-grid {{ position: relative; min-height: 24mm; height: 100%; display: grid; grid-template-columns: 19mm minmax(0,1fr) 24mm 24mm; align-items: center; gap: 2mm; padding: 3.5mm 2.4mm; border-top: .7mm solid #d6a329; border-bottom: .7mm solid #d6a329; overflow: hidden; isolation: isolate; }}
-.feature-highlight-grid::before {{ content: ""; position: absolute; z-index: -1; inset: 0; background: linear-gradient(128deg,transparent 0 58%,rgba(242,223,116,.08) 58% 59%,transparent 59% 67%,rgba(255,255,255,.055) 67% 68%,transparent 68%); }}
-.feature-highlight-grid::after {{ content: attr(data-minutes); position: absolute; z-index: -1; right: 5mm; bottom: -8mm; color: rgba(255,255,255,.055); font-size: 31mm; font-weight: 900; line-height: 1; font-variant-numeric: tabular-nums; }}
-.feature-time {{ position: relative; z-index: 1; color: #f2df74; font-size: 3.2mm; font-weight: 900; font-variant-numeric: tabular-nums; }}
-.feature-copy {{ position: relative; z-index: 1; min-width: 0; }}
+.layout-feature .feature-highlight td {{ min-height: 24mm; padding: 3.5mm 1.2mm; background: #772432; color: #fff; border-top: .7mm solid #d6a329; border-bottom: .7mm solid #d6a329; }}
+.layout-feature .feature-highlight .feature-copy {{ background-image: linear-gradient(128deg,transparent 0 72%,rgba(242,223,116,.1) 72% 74%,transparent 74%); }}
+.feature-time {{ color: #f2df74 !important; font-size: 3.2mm; font-weight: 900; font-variant-numeric: tabular-nums; }}
+.feature-copy {{ min-width: 0; }}
 .feature-copy > strong {{ display: block; color: #fff; font-size: 4.5mm; line-height: 1.08; letter-spacing: .08mm; }}
 .feature-beats {{ margin-top: 2.2mm; display: grid; grid-template-columns: repeat(auto-fit,minmax(25mm,1fr)); gap: 1.5mm; }}
 .feature-beats span {{ padding-top: .9mm; border-top: .28mm solid rgba(242,223,116,.72); color: #fff6dc; font-size: 2mm; font-weight: 650; line-height: 1.28; text-wrap: balance; }}
-.feature-owner {{ position: relative; z-index: 1; display: grid; gap: .8mm; color: #f2df74; text-align: center; }}
-.feature-owner small {{ font-size: 1.7mm; font-weight: 700; }}
+.feature-owner {{ color: #f2df74 !important; text-align: left; }}
+.owner-align-center .feature-owner {{ text-align: center; }}
 .feature-owner strong {{ font-size: 2.7mm; font-weight: 850; }}
-.feature-duration {{ position: relative; z-index: 1; display: flex; justify-content: flex-end; align-items: baseline; gap: .8mm; color: #f2df74; text-align: right; }}
+.feature-duration {{ color: #f2df74 !important; text-align: right; white-space: nowrap; }}
 .feature-duration strong {{ font-size: 6mm; line-height: 1; font-weight: 900; }}
-.feature-duration span {{ font-size: 2.1mm; font-weight: 800; }}
+.feature-duration span {{ margin-left: .8mm; font-size: 2.1mm; font-weight: 800; }}
+.feature-emphasis-compact .feature-highlight td {{ min-height: 20mm; padding-block: 2mm; }}
+.feature-emphasis-compact .feature-copy > strong {{ font-size: 3.7mm; }}
+.feature-emphasis-compact .feature-beats {{ margin-top: 1.3mm; gap: 1.1mm; }}
+.feature-emphasis-compact .feature-beats span {{ padding-top: .65mm; font-size: 1.85mm; }}
+.feature-emphasis-compact .feature-owner strong {{ font-size: 2.35mm; }}
+.feature-emphasis-compact .feature-duration strong {{ font-size: 5mm; }}
+.feature-emphasis-strong .feature-highlight td {{ min-height: 27mm; padding-block: 4.2mm; }}
+.feature-emphasis-strong .feature-copy > strong {{ font-size: 5.1mm; }}
+.feature-emphasis-strong .feature-duration strong {{ font-size: 6.8mm; }}
 .page.with-support:not(.layout-marathon) .left-rail {{ gap: 0; border: .3mm solid #174f7f; border-radius: 1.2mm; overflow: hidden; background: color-mix(in srgb,var(--theme-soft) 32%,#fff); }}
 .page.with-support:not(.layout-marathon) .left-rail .module {{ --rail-grow: 3; flex: var(--rail-grow) 1 0; min-height: min-content; display: flex; flex-direction: column; border: 0; border-bottom: .22mm solid #aebfcb; border-radius: 0; background: rgba(255,255,255,.88); }}
 .page.with-support:not(.layout-marathon) .left-rail .module:last-child {{ border-bottom: 0; }}
@@ -2659,7 +3010,7 @@ tbody tr:last-child td {{ border-bottom: 0; }}
 }}
 </style>
 </head>
-<body>{''.join(page_blocks)}</body>
+<body>{''.join(page_blocks)}{CLASSIC_VISUAL_AUDIT_SCRIPT}</body>
 </html>
 """
 

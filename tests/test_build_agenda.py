@@ -154,12 +154,18 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(result["feature_item"], "prepared_speech:1")
         rendered = BUILDER.render_html(result)
         feature_block = re.search(
-            r'<tr class="feature-highlight">.*?</tr>', rendered, re.DOTALL
+            r'<tr class="feature-highlight"[^>]*>.*?</tr>', rendered, re.DOTALL
         )
         self.assertIsNotNone(feature_block)
         assert feature_block
-        self.assertIn("深度主题演讲", feature_block.group(0))
-        self.assertNotIn("短工作坊", feature_block.group(0))
+        block_html = feature_block.group(0)
+        self.assertEqual(block_html.count("<td"), 4)
+        self.assertIn('class="feature-time time"', block_html)
+        self.assertIn('class="feature-copy activity"', block_html)
+        self.assertIn('class="feature-owner owner"', block_html)
+        self.assertIn('class="feature-duration duration"', block_html)
+        self.assertIn("深度主题演讲", block_html)
+        self.assertNotIn("短工作坊", block_html)
 
     def test_feature_item_can_be_explicitly_selected(self) -> None:
         data = example()
@@ -271,6 +277,36 @@ class AgendaBuilderTests(unittest.TestCase):
         _, invalid_errors, _ = BUILDER.build_agenda(data)
         self.assertTrue(any("meeting.layout must be" in error for error in invalid_errors))
         self.assertTrue(any("meeting.visual_theme must be" in error for error in invalid_errors))
+
+    def test_visual_preferences_change_rendering_without_changing_facts(self) -> None:
+        baseline, baseline_errors, _ = BUILDER.build_agenda(example())
+        self.assertEqual(baseline_errors, [])
+
+        data = example()
+        data["meeting"]["visual_preferences"] = {
+            "text_size": "large",
+            "feature_emphasis": "compact",
+            "owner_alignment": "left",
+        }
+        styled, styled_errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(styled_errors, [])
+        self.assertEqual(styled["computed"], baseline["computed"])
+        self.assertEqual(styled["timeline"], baseline["timeline"])
+        self.assertEqual(
+            styled["visual_preferences"],
+            {
+                "text_size": "large",
+                "feature_emphasis": "compact",
+                "owner_alignment": "left",
+            },
+        )
+
+        classic = BUILDER.render_html(styled)
+        editorial = BUILDER.render_output_html(styled, "editorial")
+        for rendered in (classic, editorial):
+            self.assertIn("text-size-large", rendered)
+            self.assertIn("feature-emphasis-compact", rendered)
+            self.assertIn("owner-align-left", rendered)
 
     def test_editorial_renderer_preserves_computed_timeline_and_inlines_assets(self) -> None:
         result, errors, _ = BUILDER.build_agenda(example())
@@ -764,6 +800,203 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(by_id["table_topics_evaluation"]["transition_after"], 0.5)
         self.assertEqual(result["computed"]["transition_minutes"], 18)
         self.assertEqual(result["computed"]["total_minutes"], 120)
+
+    def test_agenda_overrides_change_generated_items_and_reclose_timeline(self) -> None:
+        data = example()
+        data["agenda_overrides"] = [
+            {
+                "id": "timer_intro",
+                "minutes": 1,
+                "owner": "新时间官",
+                "label": "时间规则快速说明",
+                "transition_after": 0.5,
+            },
+            {"id": "general_evaluation", "minutes": 10},
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        by_id = {row["id"]: row for row in result["timeline"]}
+        self.assertEqual(by_id["timer_intro"]["duration"], 1)
+        self.assertEqual(by_id["timer_intro"]["owner"], "新时间官")
+        self.assertEqual(by_id["timer_intro"]["label"], "时间规则快速说明")
+        self.assertEqual(by_id["timer_intro"]["transition_after"], 0.5)
+        self.assertEqual(by_id["general_evaluation"]["duration"], 10)
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+        self.assertEqual(result["computed"]["final_end"], "21:30")
+
+    def test_agenda_override_can_remove_an_item_and_reclose_timeline(self) -> None:
+        data = example()
+        data["agenda_overrides"] = [{"id": "photo_break", "enabled": False}]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertNotIn("photo_break", {row["id"] for row in result["timeline"]})
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+        self.assertEqual(result["computed"]["final_end"], "21:30")
+
+    def test_agenda_override_after_moves_item_and_recloses_timeline(self) -> None:
+        data = example()
+        data["agenda_overrides"] = [
+            {"id": "table_topics_evaluation", "after": "table_topics"}
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+
+        ids = [row["id"] for row in result["timeline"]]
+        table_topics_index = ids.index("table_topics")
+        evaluation_index = ids.index("table_topics_evaluation")
+        self.assertEqual(evaluation_index, table_topics_index + 1)
+        self.assertLess(evaluation_index, ids.index("photo_break"))
+        self.assertEqual(
+            result["timeline"][evaluation_index]["section"],
+            result["timeline"][table_topics_index]["section"],
+        )
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+        self.assertEqual(result["computed"]["final_end"], "21:30")
+
+    def test_agenda_override_after_rejects_invalid_reorder_graphs(self) -> None:
+        baseline, baseline_errors, _ = BUILDER.build_agenda(example())
+        self.assertEqual(baseline_errors, [])
+        baseline_ids = [row["id"] for row in baseline["timeline"]]
+        cases = (
+            (
+                [{"id": "table_topics_evaluation", "after": "not-a-real-item"}],
+                "references missing after anchor",
+            ),
+            (
+                [{"id": "table_topics", "after": "table_topics"}],
+                "cannot be placed after itself",
+            ),
+            (
+                [
+                    {
+                        "id": "prepared_evaluation:1",
+                        "after": "prepared_evaluation:2",
+                    },
+                    {
+                        "id": "prepared_evaluation:2",
+                        "after": "prepared_evaluation:1",
+                    },
+                ],
+                "contains a cycle",
+            ),
+        )
+        for overrides, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                data = example()
+                data["agenda_overrides"] = overrides
+                result, errors, _ = BUILDER.build_agenda(data)
+                self.assertTrue(
+                    any(expected_error in error for error in errors),
+                    errors,
+                )
+                self.assertEqual(
+                    [row["id"] for row in result["timeline"]],
+                    baseline_ids,
+                )
+
+    def test_agenda_override_after_resolves_reverse_declared_dependency_chain(self) -> None:
+        data = example()
+        data["agenda_overrides"] = [
+            {
+                "id": "prepared_evaluation:3",
+                "after": "prepared_evaluation:2",
+            },
+            {
+                "id": "prepared_evaluation:2",
+                "after": "prepared_evaluation:1",
+            },
+            {"id": "prepared_evaluation:1", "after": "table_topics"},
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+
+        ids = [row["id"] for row in result["timeline"]]
+        table_topics_index = ids.index("table_topics")
+        self.assertEqual(
+            ids[table_topics_index : table_topics_index + 4],
+            [
+                "table_topics",
+                "prepared_evaluation:1",
+                "prepared_evaluation:2",
+                "prepared_evaluation:3",
+            ],
+        )
+        self.assertLess(ids.index("prepared_evaluation:3"), ids.index("photo_break"))
+        anchor_section = result["timeline"][table_topics_index]["section"]
+        by_id = {row["id"]: row for row in result["timeline"]}
+        for item_id in (
+            "prepared_evaluation:1",
+            "prepared_evaluation:2",
+            "prepared_evaluation:3",
+        ):
+            self.assertEqual(by_id[item_id]["section"], anchor_section)
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+        self.assertEqual(result["computed"]["final_end"], "21:30")
+
+    def test_agenda_overrides_reject_missing_and_duplicate_definitions(self) -> None:
+        missing_id = example()
+        missing_id["agenda_overrides"] = [{"minutes": 1}]
+        _, missing_id_errors, _ = BUILDER.build_agenda(missing_id)
+        self.assertTrue(any("is missing id" in error for error in missing_id_errors))
+
+        missing_target = example()
+        missing_target["agenda_overrides"] = [
+            {"id": "not-a-real-item", "minutes": 1}
+        ]
+        _, missing_target_errors, _ = BUILDER.build_agenda(missing_target)
+        self.assertTrue(
+            any("references missing item" in error for error in missing_target_errors)
+        )
+
+        duplicate = example()
+        duplicate["agenda_overrides"] = [
+            {"id": "timer_intro", "minutes": 1},
+            {"id": "timer_intro", "owner": "新时间官"},
+        ]
+        _, duplicate_errors, _ = BUILDER.build_agenda(duplicate)
+        self.assertTrue(
+            any("duplicate agenda override" in error for error in duplicate_errors)
+        )
+
+        overlap = example()
+        overlap["standard_overrides"] = [{"id": "photo_break", "minutes": 4}]
+        overlap["agenda_overrides"] = [{"id": "photo_break", "minutes": 5}]
+        _, overlap_errors, _ = BUILDER.build_agenda(overlap)
+        self.assertTrue(any("overridden twice" in error for error in overlap_errors))
+
+        duplicate_transition = example()
+        duplicate_transition["agenda_overrides"] = [
+            {"id": "timer_intro", "transition_after": 0.5}
+        ]
+        duplicate_transition["transition_overrides"] = [
+            {"id": "timer_intro", "minutes": 0.5}
+        ]
+        _, duplicate_transition_errors, _ = BUILDER.build_agenda(
+            duplicate_transition
+        )
+        self.assertTrue(
+            any("defined twice" in error for error in duplicate_transition_errors)
+        )
+
+    def test_agenda_overrides_block_broken_speech_evaluation_relationships(self) -> None:
+        cases = (
+            (
+                "prepared_speech:1",
+                "prepared_evaluation:1 remains but prepared_speech:1 was removed",
+            ),
+            (
+                "table_topics",
+                "table_topics_evaluation remains but table_topics was removed",
+            ),
+        )
+        for removed_id, expected_error in cases:
+            with self.subTest(removed_id=removed_id):
+                data = example()
+                data["agenda_overrides"] = [
+                    {"id": removed_id, "enabled": False}
+                ]
+                _, errors, _ = BUILDER.build_agenda(data)
+                self.assertIn(expected_error, errors)
 
     def test_auto_evaluation_does_not_absorb_an_unrelated_time_gap(self) -> None:
         data = example()

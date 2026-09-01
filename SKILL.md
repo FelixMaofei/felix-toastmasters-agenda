@@ -11,6 +11,14 @@ description: 将 Toastmasters 角色接龙、会议说明或旧会单参考，�
 
 输入是本期角色接龙、会议说明或可选旧会单；输出是内容准确、时间闭合、可现场执行的一页 A4 会单。不复刻旧样式，不把单一俱乐部的流程当成通用标准。
 
+## 默认面向 AI 小白
+
+- 用户只需说自己想要什么，不向用户暴露 JSON、CSS、Python、模板或字段名。
+- 用户说“这一期改成……”或“字大一点”，已经是对本期可逆调整的授权；不再追问“是否允许改 CSS/程序”。
+- 只有用户明确要求“以后默认都这样”时才更新俱乐部 profile；只有明确要求“修改 Skill 本身”时才进入维护者模式。
+- 先完成一份可用成品，再根据用户反馈迭代；视觉调整失败时保留上一份 PDF/PNG，不让用户从“已完成”退回“什么都没有”。
+- 遇到一页 A4 冲突时，用业务语言给 1-2 个可操作选择，例如“保持一页并缩短俱乐部介绍”或“保留全部内容但不再放大正文”。
+
 ## 轻量初始化与日常使用
 
 用户的最短入口可以只是：“帮我把这份角色接龙做成会单。”不要先要求旧会单、JSON 或技术配置。
@@ -23,28 +31,41 @@ description: 将 Toastmasters 角色接龙、会议说明或旧会单参考，�
 6. 首次稳定信息确认后创建俱乐部 profile。用户明确长期修改默认地点、语言、组件、官员、介绍、入会信息、VPM 二维码或自定义块时才更新；官方俱乐部名称变更时按新名称创建新 profile。本期变化不覆盖 profile。
 
 详细的字段、空值语义、组件选择和 profile 命令见 [输入结构](references/input-schema.md)。
-在 WorkBuddy、本地模型或执行能力不确定的 Agent 中，改用 [本地/弱模型最短工作流](references/local-model-workflow.md)和 `scripts/run_agenda.py`，不让模型自己组装命令。
+在 WorkBuddy、本地模型或其他可执行本地命令的 Agent 中，使用 [自然语言与受控执行工作流](references/local-model-workflow.md)和 `scripts/run_agenda.py`，不让模型重复组装命令。
 
 ## 默认工作流
 
 1. 读取 [输入结构](references/input-schema.md)，从当前材料生成只包含本期事实的 meeting JSON。保留接龙顺序，不手写完整时间轴、开始时间或转场。
-2. 本期存在特殊环节、默认规则冲突、超时或生成器报错时，再读 [会单业务与时间规则](references/agenda-rules.md)。
+2. 只有业务含义不清、明确顺序不同于默认、超时或生成器报错时，再读 [会单业务与时间规则](references/agenda-rules.md)。普通特殊环节已有名称、负责人、时长和位置时不额外展开规则文档。
 3. Skill 加载时会显示 Base directory。将它作为 `SKILL_DIR`，用绝对路径运行生成器：
 
    ```bash
-   python3 "$SKILL_DIR/scripts/build_agenda.py" meeting.json --club-profile "俱乐部完整名称" --output-dir output
+   python3 "$SKILL_DIR/scripts/run_agenda.py" prepare meeting.json --club-profile "俱乐部完整名称" --output-dir output
    ```
 
    同名 profile 不存在时，生成成功后自动创建；日常 meeting JSON 可以省略整个 `club`。用户明确要长期改变某个字段时，把新值写入 `club.<field>` 并加 `--update-club-profile`；`meeting.*` 仍只表示本期变化。
 4. 退出码为 `2` 时，只根据错误中的缺失负责人、冲突、剩余或超时分钟处理；不猜测修复，不绕过阻断。
-5. 退出码为 `0` 时，先向用户展示 `agenda.md` 确认姓名、顺序、时长和地点。
-6. 文字确认后读取 [版式路由与主题视觉系统](references/visual-system.md)。默认让程序同时选择内容版式和 HTML 呈现器，不为显得智能而追问。
-7. 若主题确实需要更强艺术表达，可在文字确认后生成一张无文字、无 Logo、无二维码的主题图，写入 `meeting.theme_image` 并重新运行生成器。
+5. 退出码为 `0` 时，用 `agenda.md` 自检姓名、顺序、时长和地点。没有事实疑问就继续导出，不要求普通用户先批准技术预览；用户明确只要草稿时才停在这里。
+6. 默认让程序同时选择内容版式和 HTML 呈现器，不预读视觉文档、不为显得智能而追问。只有用户明确要求改变版式、主题视觉或加入主题图时，才读 [版式路由与主题视觉系统](references/visual-system.md)。
+7. 若用户确实需要更强艺术表达，可生成一张无文字、无 Logo、无二维码的主题图，写入 `meeting.theme_image` 并重新运行生成器。
 8. 用同一 HTML 导出打印和分享成品：
 
    ```bash
-   python3 "$SKILL_DIR/scripts/export_a4.py" output/agenda.html --output-dir output
+   python3 "$SKILL_DIR/scripts/run_agenda.py" finalize output/agenda.html --output-dir output
    ```
+
+## 用户反馈后的可逆优化
+
+- “整体字大/小一点”映射为 `meeting.visual_preferences.text_size = large/compact`；
+- “重点环节别这么夸张/更突出”映射为 `feature_emphasis = compact/strong`；
+- “负责人都左对齐/居中”映射为 `owner_alignment = left/center`；重点行与普通行始终共用同一组表格列，不用独立网格模拟列。
+- 任意已生成环节的时长、负责人、名称、是否显示、转场和“放在某环节之后”，使用 `agenda_overrides`，不修改计算源码；明确接龙顺序优先于默认顺序。
+- 纯视觉反馈后，重新生成的 `agenda.computed.json` 必须与上一份已确认成品保持相同姓名、顺序、时长和地点；出现非用户要求的事实变化时丢弃新版，不得用一句“已更新”掩盖回退。
+- 当前语义参数覆盖不了的一次性视觉要求，可在输出目录复制 HTML 做纯 CSS 试验；这是内部可逆处理，不向普通用户请求技术授权。不得改已安装模板或可见文字，且必须重新通过 `finalize`；当前环境不允许安全试验时就保留上一版，用人话给出现有可选项。
+- `finalize` 失败时交付上一份可用版并给出人话选择；不向普通用户请求修改 CSS、HTML 或 Python 的权限。
+- `finalize` 成功后还要检查最终 `agenda.png`：负责人列与普通行同列、无截断重叠、字号可读、成品中没有制作过程文字。只有这张最终 A4 通过后才能说“完成”。
+- 面向普通用户的完成回复只说明：会单已完成、时间是否闭合、用户刚要求的变化是否落实，并交付 PDF/PNG。不要展示 `feature / technology / renderer`、JSON/HTML/源码、profile 路径、检查过程或内部文件清单。
+- 除非用户明确说“以后默认都这样”且长期设置确实写入成功，不得声称某个本期选择已经保存为俱乐部默认。首次创建 profile 也不等于把 `meeting.*` 的单期变化存成长期默认。
 
 ## 绝不能破的不变项
 
@@ -59,8 +80,8 @@ description: 将 Toastmasters 角色接龙、会议说明或旧会单参考，�
 
 ## 执行纪律
 
-- `build_agenda.py` 和 `export_a4.py` 是确定性程序，普通任务直接运行。只有出现 traceback、无法执行或输出结构损坏时才检查源码或测试。
+- 普通任务统一通过 `run_agenda.py prepare|finalize` 调用内部确定性程序。只有出现 traceback、无法执行或输出结构损坏时才检查源码或测试。
 - 不在程序前后手算整场时间，不用模型计算覆盖 `agenda.computed.json`。
 - `export_a4.py` 因第 2 页退出 `2` 时，说明单页容量冲突并请用户精简议程行、介绍文字或固定组件；不绕过导出器。
-- editorial 呈现器会在导出前自动检查裁切、单行越界、孤字尾行、字号下限和主体对齐；任一失败都退出 `2`，不得跳过视觉检查直接打印。
+- 两个呈现器都会在导出前检查一页 A4 与关键版面错误；editorial 额外检查裁切、孤字尾行、字号下限和主体对齐，classic 检查表格列闭合与负责人对齐。任一失败都退出 `2`，不得跳过视觉检查直接打印。
 - 必须先看当前消息和附件，不因初始化扩张搜索无关历史、会员库或网络。用户明确选定后停止继续改版。

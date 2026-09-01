@@ -26,6 +26,11 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
     "layout": "auto",
     "feature_item": null,
     "visual_theme": "auto",
+    "visual_preferences": {
+      "text_size": "standard",
+      "feature_emphasis": "standard",
+      "owner_alignment": "default"
+    },
     "approved_overtime_minutes": 0
   },
   "roles": [],
@@ -34,6 +39,7 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
   "backstage": [],
   "special_segments": [],
   "standard_overrides": [],
+  "agenda_overrides": [],
   "transition_overrides": []
 }
 ```
@@ -147,6 +153,7 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 - `layout`：`auto`、`standard`、`feature` 或 `marathon`。默认 `auto`；除非用户明确选择，不需要追问。
 - `feature_item`：可选的本期环节 ID，用于多个重点候选时指定主舞台，例如 `special:2` 或 `prepared_speech:1`。用户未指定时不需追问，生成器自动选时长最长者，同长选更早出现者。
 - `visual_theme`：`auto`、`general`、`learning`、`technology`、`wellness`、`voice`、`leadership` 或 `celebration`。默认优先从本期主题和今日一词识别。
+- `visual_preferences`：用户可理解的本期视觉调整。`text_size` 可为 `compact / standard / large`；`feature_emphasis` 可为 `compact / standard / strong`；`owner_alignment` 可为 `default / left / center`。用户只需说“整体字大一点”“重点块小一点”或“负责人都左对齐”，不向用户暴露字段名。
 - `theme_image`：可选的 PNG/JPG/SVG/WebP 主题图路径。图中不得包含文字、Logo、人名、时间或二维码；相对路径以 meeting JSON 所在目录为基准。
 - `approved_overtime_minutes`：默认 `0`，支持 0.5 分钟递增。只有用户明确同意当前计算所需的准确分钟数后才能写入；内容变化后若超时分钟数不同，旧授权自动失效。
 - `support_components`：可选；本期需要改变俱乐部常用组合时覆盖 `club.support_components`。
@@ -256,7 +263,36 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 - `after` 可省略，默认放在嘉宾介绍之后。
 - 可用锚点包括 `guest_introduction`、`prepared_speech:1`、`table_topics`、`photo_break`、`prepared_evaluation:1`、`sharing` 等。
 
-## 8. 标准环节覆盖
+## 8. 任意环节统一覆盖（推荐）
+
+用户对本期已存在环节的修改，统一使用 `agenda_overrides`，不需要先判断它是标准环节、角色触发环节还是演讲点评：
+
+```json
+{
+  "agenda_overrides": [
+    {"id": "timer_intro", "minutes": 1},
+    {"id": "general_evaluation", "minutes": 10},
+    {"id": "photo_break", "label": "合影＋茶歇", "minutes": 8},
+    {"id": "ah_counter_intro", "enabled": false},
+    {"id": "prepared_evaluation:1", "owner": "新点评人", "transition_after": 0.5},
+    {"id": "table_topics_evaluation", "after": "table_topics"}
+  ]
+}
+```
+
+可用字段：
+
+- `id`：已生成环节的稳定 ID，必填；
+- `minutes`：本期时长，支持 0.5 分钟递增；
+- `owner`：本期负责人；
+- `label`：本期显示名称；
+- `enabled`：`false` 明确取消该环节；
+- `transition_after`：该环节后的转场，支持 0.5 分钟递增。
+- `after`：本期明确顺序与默认流程不同时，把该环节移动到另一个已生成环节之后；程序同时让它进入锚点所在阶段。
+
+覆盖在全部标准、角色和特殊环节完成组装后应用，然后程序按本期顺序重新求解整场时间。不允许直接覆盖 `start / end`，它们始终由程序派生。`after` 不能指向自身、已取消环节或形成循环。
+
+## 8.1 旧版标准环节覆盖（兼容）
 
 只写本期明确变化，不要把全部默认环节重复一遍：
 
@@ -277,7 +313,7 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 - `label`：覆盖显示名称；
 - `transition_after`：覆盖默认转场分钟数，可使用 `0.5`。
 
-## 9. 任意环节转场覆盖
+## 8.2 旧版任意环节转场覆盖（兼容）
 
 备稿点评、即兴点评、时间官/哼哈官/语法官报告等角色触发环节不属于 `standard_overrides`。需要单独调整它们的转场时，使用：
 
@@ -298,7 +334,7 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 - `minutes` 支持 `0`、`0.5`、`1` 等 0.5 分钟递增；
 - 同一环节不要同时在两处覆盖转场。
 
-## 10. 输出与退出码
+## 9. 输出与退出码
 
 ```bash
 python3 scripts/build_agenda.py meeting.json --output-dir output

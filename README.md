@@ -1,81 +1,101 @@
-# Felix Toastmasters Agenda V2
+# Felix Toastmasters Agenda
 
-把 Toastmasters 角色接龙转换成内容准确、时间闭合、符合品牌规范的 A4 会单。
+把 Toastmasters 角色接龙和本期说明，变成内容准确、时间闭合、可直接使用的一页 A4 会单。
 
-## 特点
+> **继承稳定内容，识别本期变化，自动完成加减计算，让整场会议重新闭合。**
 
-- 适用于不同 Toastmasters 俱乐部；
+## 最短用法
+
+安装后，粘贴角色接龙或发送截图，只需说：
+
+> 帮我把这份角色接龙做成会单。
+
+就这一句。旧会单有就一起发，没有也可以开始。用户不需要准备配置文件，也不需要懂生成和排版技术。
+
+## 它会怎么做
+
+1. 先读你当前发来的文字、图片和附件，不重复追问已有信息。
+2. 已经用过的俱乐部，会继承已确认的名称、地点、语言和常用信息；新俱乐部也不会因为没有旧会单而停下。
+3. 如果真有影响成品的信息缺失，会先说出已识别的内容，再把缺项合并成一次短询问。
+4. 信息够用后先做出可核对的会单，自动重算环节、转场和结束时间，再导出一页 A4 PDF 和分享图。
+5. 你可以继续用人话修改；如果新版未通过单页检查，上一份可用成品仍会保留。
+
+如果当前电脑暂时缺少导出条件，会先保留已完成的会单内容，再用人话给你一个最短处理建议，不会把报错和内部命令丢给你。
+
+## 怎么继续优化
+
+成品出来后，直接说你想要的效果：
+
+- “时间官宣言改成 1 分钟，总点评改成 10 分钟。”
+- “重点环节小一点，其他字大一点。”
+- “这期取消茶歇，合影负责人改成 Alex。”
+- “这期只要纯议程。”
+
+这些话已经足够，AI 会直接调整、重新校验并导出新版，不会再让你判断用什么技术实现，也不会要求你授权修改程序。你说“OK”“可以”或“就这样”，代表停止继续改版并交付当前成品。只有你说“以后都这样”，才会改变该俱乐部的长期默认。
+
+## 哪些情况才会问你
+
+- 不同理解会导致会单事实不同，又无法从当前材料判断；
+- 已出现的角色负责人待定，或本期特殊环节缺少负责人、时长或先后位置；
+- 第一次使用时，需要确认俱乐部基本信息和常用信息区；
+- 会议必须超过原定结束时间，需要你确认准确的超时分钟数；
+- 内容与“一页 A4 且清晰可读”冲突，必须由你选择保留哪部分。
+
+这些情况会尽量合并为一次人话询问。不会因为没有旧会单、你不需要了解内部技术，或者你只想把字改大一点而卡住。
+
+## 会单内容能有多灵活
+
 - 支持中文、英文和中英双语；
-- 不复刻旧会单样式；
-- 弱模型只需提取本期事实，程序负责标准流程、默认时间、转场和结束点；
+- 支持普通例会、重点环节和演讲马拉松等不同密度；
+- 支持新角色、新环节、工作坊、微课、圆桌和其他本期特殊安排；
+- 时长、转场和超时授权支持 0.5 分钟；
 - 即兴演讲与即兴点评联动计算；
-- 环节时长、转场和超时授权支持 0.5 分钟递增；
-- 根据会议内容自动选择标准例会、重点环节或演讲马拉松版式；
-- 根据本期主题选择受控的色彩与纹理，并支持可选无文字主题图；
-- 普通中文/英文例会可自动使用高密度 editorial A4 呈现器，纯议程、双语和马拉松继续使用 classic；
-- editorial 导出前自动阻断裁切、越界、孤字、小字和对齐错误；
-- 首次确认后按俱乐部名称保存轻量本机 profile，新任务只需提供本期接龙和变化；
-- WorkBuddy/本地模型使用 `run_agenda.py doctor|prepare|finalize` 固定入口，不需要模型自行组装命令；
-- `package_local.py` 只打包运行所需的白名单文件，并在生成 ZIP 前做私有路径/内容扫描；
-- 超出会议时间时停止并要求确认；
-- 固定信息作为可选单页信息组件，不强制所有俱乐部使用同一组内容；
-- 支持用标题和纯文本行扩展自定义信息组件，排版器自动分配左栏与底部；
-- 从同一份 JSON 生成 Markdown 和 A4 HTML。
+- 固定信息区可选可组合，还可增加俱乐部自己的信息块；
+- 同一份内容同步生成可核对文字、A4 PDF 和分享图。
 
-## 可选固定信息区
+可选信息区包括：时间官规则、头马介绍、会议秩序与四类禁忌、当届官员团队、俱乐部介绍、如何入会、VPM 入会二维码和本期投票二维码。首次使用时可以全选、部分选或只要纯议程；二维码始终使用用户提供的原图。
 
-Skill 内置 8 个可选组件：时间官规则、头马介绍、会议秩序与四类禁忌、当届官员团队、俱乐部介绍、如何入会、VPM 入会二维码和本期投票二维码。
-
-首次使用时，Skill 会询问要加入哪些。前四项只是推荐选项，不会在用户未选择时自动加入。可以全选、部分选择，也可以全部不选，只要纯议程。俱乐部可以保存常用组合，单期再完整覆盖。
-
-两种二维码都必须使用用户提供的原始图片，不从截图裁切，不由模型重画或修复。
-
-## 使用
-
-安装到 Codex 或 WorkBuddy 后，直接说：
-
-> 请使用 felix-toastmasters-agenda，把下面这份角色接龙做成会单。先自己识别已有信息，缺什么再一次问我。
-
-旧会单是可选参考，不是必交材料。用户不需要自己准备 JSON 或配置文件；Skill 会先从当前消息、接龙和附件中识别，再询问无法判定的少量信息。
-
-手动运行：
-
-```bash
-SKILL_DIR="/path/to/felix-toastmasters-agenda"
-python3 "$SKILL_DIR/scripts/build_agenda.py" meeting.json --output-dir output
-python3 "$SKILL_DIR/scripts/export_a4.py" output/agenda.html --output-dir output
-```
-
-匿名示例见 `examples/meeting.example.json`。
-
-## 安装位置
+## 安装
 
 GitHub：<https://github.com/FelixMaofei/felix-toastmasters-agenda>
 
-Codex：
+不会命令行时，可以把上面的链接发给支持 Skill 安装的 AI，直接说：
+
+> 请安装这个会单 Skill，安装后告诉我已经可以使用。
+
+需要手动安装时：
 
 ```bash
+# Codex
 git clone https://github.com/FelixMaofei/felix-toastmasters-agenda.git ~/.agents/skills/felix-toastmasters-agenda
-```
 
-WorkBuddy：
-
-```bash
+# WorkBuddy
 git clone https://github.com/FelixMaofei/felix-toastmasters-agenda.git ~/.workbuddy/skills/felix-toastmasters-agenda
 ```
 
-不要同时启用旧会单 Skill 和 V2，否则自动识别可能命中错误版本。
+不要同时启用旧会单 Skill 和当前版本，否则自动识别可能命中错误版本。
 
-## 依赖与自检
+## 给维护者
 
-- Python 3：计算和生成 Markdown/HTML；
-- Chrome、Chromium 或 Edge：导出 A4 PDF；
-- Poppler 的 `pdftoppm`：优先生成逐页 PNG；缺失时使用 Chrome 长图兜底。
+AI 负责理解用户、识别附件和映射本期变化；确定性程序负责时间闭合、姓名与关系检查、单页 A4 和品牌底线。这是“聪明模型 + 确定性验证”，不预设任何模型只能机械提取。
+
+主要入口：
 
 ```bash
-python3 -m py_compile "$SKILL_DIR/scripts/build_agenda.py" "$SKILL_DIR/scripts/export_a4.py"
-python3 "$SKILL_DIR/scripts/build_agenda.py" "$SKILL_DIR/examples/meeting.example.json" --output-dir /tmp/felix-agenda-smoke
-python3 "$SKILL_DIR/scripts/export_a4.py" /tmp/felix-agenda-smoke/agenda.html --output-dir /tmp/felix-agenda-smoke
+SKILL_DIR="/path/to/felix-toastmasters-agenda"
+python3 "$SKILL_DIR/scripts/run_agenda.py" doctor
+python3 "$SKILL_DIR/scripts/run_agenda.py" prepare meeting.json --club-profile "俱乐部完整名称" --output-dir output
+python3 "$SKILL_DIR/scripts/run_agenda.py" finalize output/agenda.html --output-dir output
 ```
 
-最终只允许输出 1 页 A4 竖版 PDF 和 1 张 PNG。固定信息组件与议程整合在同一页；内容放不下时停止并请用户精简环节或组件，不跨页、不裁切、不缩成不可读小字。
+依赖：Python 3 负责计算和生成；Chrome、Chromium 或 Edge 负责导出 A4 PDF；Poppler 可优先生成逐页 PNG，缺失时使用浏览器长图兜底。
+
+匿名输入示例见 `examples/meeting.example.json`。本地分发包应使用 `scripts/package_local.py` 生成，它只打包运行所需文件并在生成 ZIP 前扫描私有路径和内容。
+
+更详细的内部输入结构、时间规则和受控执行见：
+
+- [`references/input-schema.md`](references/input-schema.md)
+- [`references/agenda-rules.md`](references/agenda-rules.md)
+- [`references/local-model-workflow.md`](references/local-model-workflow.md)
+
+最终只允许交付 1 页 A4 竖版 PDF 和 1 张 PNG。内容放不下时停止替换成品，保留上一版，再让用户在 1–2 个业务选择中决定。

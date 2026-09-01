@@ -794,6 +794,12 @@ def render_editorial_html(
     logo = image_data_uri(DEFAULT_LOGO)
     explicit_theme_art = result.get("_assets", {}).get("theme_art_data_uri", "")
     visual_theme = str(result.get("visual_theme", "general"))
+    visual_preferences = result.get("visual_preferences", {})
+    text_size = str(visual_preferences.get("text_size", "standard"))
+    feature_emphasis = str(
+        visual_preferences.get("feature_emphasis", "standard")
+    )
+    owner_alignment = str(visual_preferences.get("owner_alignment", "default"))
     if visual_theme not in {
         "general",
         "learning",
@@ -834,7 +840,7 @@ def render_editorial_html(
     document_title = f"{club_name} {number} {agenda_title}".strip()
     name_size_class = club_name_size_class(club.get("name"), language)
     body = f"""
-<main class="page language-{escape(language)} {escape(name_size_class)} visual-{escape(visual_theme)}">
+<main class="page language-{escape(language)} {escape(name_size_class)} visual-{escape(visual_theme)} text-size-{escape(text_size)} feature-emphasis-{escape(feature_emphasis)} owner-align-{escape(owner_alignment)}">
   <header class="hero">
     <img class="brand-logo" src="{logo}" alt="Toastmasters International">
     <div class="hero-copy">

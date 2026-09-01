@@ -85,6 +85,78 @@ class AgendaExporterTests(unittest.TestCase):
             )
 
 
+class ClassicBrowserAuditTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.chrome = EXPORTER.find_chrome()
+        if not cls.chrome:
+            cls.source = ""
+            return
+        data = json.loads(
+            (ROOT / "examples" / "meeting.example.json").read_text(encoding="utf-8")
+        )
+        data["meeting"]["theme"] = "AI 实战工作坊"
+        data["meeting"]["word_of_day"] = "创造"
+        data["special_segments"] = [
+            {
+                "title": "AI 实战工作坊",
+                "owner": "成员K",
+                "minutes": 15,
+                "after": "guest_introduction",
+                "details": ["先体验", "再拆解", "最后实作"],
+            }
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        if errors:
+            raise AssertionError(errors)
+        if result.get("layout") != "feature":
+            raise AssertionError("feature example did not select the feature layout")
+        cls.source = BUILDER.render_output_html(result, "classic")
+
+    def setUp(self) -> None:
+        if not self.chrome:
+            self.skipTest("Chrome/Chromium is not available")
+
+    def audit(self, source: str) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            html_path = Path(temp_dir) / "agenda.html"
+            html_path.write_text(source, encoding="utf-8")
+            assert self.chrome
+            return EXPORTER.run_visual_audit(self.chrome, html_path) or {}
+
+    def assert_audit_failure(self, source: str, code: str) -> None:
+        with self.assertRaisesRegex(ValueError, code):
+            self.audit(source)
+
+    def test_feature_agenda_with_four_columns_passes_visual_audit(self) -> None:
+        feature_row = re.search(
+            r'<tr class="feature-highlight"[^>]*>.*?</tr>',
+            self.source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(feature_row)
+        assert feature_row
+        self.assertEqual(feature_row.group(0).count("<td"), 4)
+        report = self.audit(self.source)
+        self.assertIs(report.get("ok"), True)
+
+    def test_audit_rejects_feature_row_with_missing_owner_column(self) -> None:
+        mutated, replacements = re.subn(
+            r'<td class="feature-owner owner">.*?</td>',
+            "",
+            self.source,
+            count=1,
+            flags=re.DOTALL,
+        )
+        self.assertEqual(replacements, 1)
+        self.assert_audit_failure(mutated, "timeline-column-count")
+
+    def test_audit_rejects_feature_owner_alignment_mismatch(self) -> None:
+        override = "<style>.feature-owner{text-align:right!important}</style>"
+        mutated = self.source.replace("</head>", override + "</head>")
+        self.assert_audit_failure(mutated, "owner-alignment-mismatch")
+
+
 class EditorialBrowserAuditTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
