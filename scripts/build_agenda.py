@@ -439,6 +439,148 @@ def meeting_boundaries(language: str) -> list[str]:
     return list(MEETING_BOUNDARIES["zh"])
 
 
+def materialize_support_blocks(
+    *,
+    language: str,
+    support_components: list[str],
+    custom_support_blocks: list[dict[str, Any]],
+    officers: list[dict[str, Any]],
+    club_intro: list[str],
+    join_info: list[str],
+    vpm_qr_data: str,
+    voting_qr_data: str,
+) -> list[dict[str, Any]]:
+    """Turn selected support content into self-contained V3 fact blocks.
+
+    The renderer must not recreate Toastmasters copy or reopen source images.
+    Physical placement and ordering remain the responsibility of agenda.view.json.
+    """
+
+    blocks: list[dict[str, Any]] = []
+    for component in support_components:
+        if component == "timer_rules":
+            blocks.append(
+                {
+                    "id": component,
+                    "group": "operations",
+                    "kind": "timing",
+                    "title": localized("时间官规则", "Timer Rules", language),
+                    "entries": [
+                        {
+                            "label": localized(
+                                row["band_zh"], row["band_en"], language
+                            ),
+                            "value": " · ".join(
+                                [
+                                    f"{localized('绿牌', 'Green', language)}: "
+                                    f"{localized(row['green_zh'], row['green_en'], language)}",
+                                    f"{localized('黄牌', 'Yellow', language)}: "
+                                    f"{localized(row['yellow_zh'], row['yellow_en'], language)}",
+                                    f"{localized('红牌', 'Red', language)}: "
+                                    f"{localized(row['red_zh'], row['red_en'], language)}",
+                                    f"{localized('响铃', 'Bell', language)}: "
+                                    f"{localized(row['bell_zh'], row['bell_en'], language)}",
+                                ]
+                            ),
+                        }
+                        for row in TIMER_RULES
+                    ],
+                }
+            )
+        elif component == "toastmasters_intro":
+            blocks.append(
+                {
+                    "id": component,
+                    "group": "background",
+                    "kind": "prose",
+                    "title": localized(
+                        "头马国际演讲会", "Toastmasters International", language
+                    ),
+                    "lines": [toastmasters_intro(language)],
+                }
+            )
+        elif component == "meeting_boundaries":
+            blocks.append(
+                {
+                    "id": component,
+                    "group": "background",
+                    "kind": "bullets",
+                    "title": localized(
+                        "会议秩序与内容边界",
+                        "Meeting Conduct & Content Boundaries",
+                        language,
+                    ),
+                    "lines": meeting_boundaries(language),
+                }
+            )
+        elif component == "officers":
+            blocks.append(
+                {
+                    "id": component,
+                    "group": "operations",
+                    "kind": "pairs",
+                    "title": localized("当届官员团队", "Current Officer Team", language),
+                    "entries": [
+                        {"label": row["role"], "value": row["name"]}
+                        for row in officers
+                    ],
+                }
+            )
+        elif component == "club_intro":
+            blocks.append(
+                {
+                    "id": component,
+                    "group": "background",
+                    "kind": "prose",
+                    "title": localized("俱乐部介绍", "About the Club", language),
+                    "lines": list(club_intro),
+                }
+            )
+        elif component == "join_info":
+            blocks.append(
+                {
+                    "id": component,
+                    "group": "background",
+                    "kind": "bullets",
+                    "title": localized("如何入会", "How to Join", language),
+                    "lines": list(join_info),
+                }
+            )
+        elif component == "vpm_qr":
+            blocks.append(
+                {
+                    "id": component,
+                    "group": "background",
+                    "kind": "image",
+                    "title": localized("入会咨询", "Membership Contact", language),
+                    "data_uri": vpm_qr_data,
+                    "alt": localized("VPM 入会二维码", "VPM joining QR code", language),
+                }
+            )
+        elif component == "voting_qr":
+            blocks.append(
+                {
+                    "id": component,
+                    "group": "operations",
+                    "kind": "image",
+                    "title": localized("本期投票", "Meeting Voting", language),
+                    "data_uri": voting_qr_data,
+                    "alt": localized("本期投票二维码", "Meeting voting QR code", language),
+                }
+            )
+
+    for block in custom_support_blocks:
+        blocks.append(
+            {
+                "id": block["id"],
+                "kind": "bullets",
+                "title": block["title"],
+                "lines": list(block["lines"]),
+            }
+        )
+    return blocks
+
+
 def normalize_details(value: Any) -> list[str]:
     if value is None:
         return []
@@ -458,6 +600,29 @@ def normalize_support_text(value: Any) -> list[str]:
         return []
     text = str(value).strip()
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def parse_participant_pathways(
+    value: Any, errors: list[str]
+) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        errors.append("participant_pathways must be an object mapping person to progress")
+        return {}
+    result: dict[str, str] = {}
+    for raw_name, raw_progress in value.items():
+        name = str(raw_name).strip()
+        if not name:
+            errors.append("participant_pathways contains an empty person name")
+            continue
+        if not isinstance(raw_progress, str) or not raw_progress.strip():
+            errors.append(
+                f"participant_pathways[{name!r}] must be a non-empty string"
+            )
+            continue
+        result[name] = raw_progress.strip()
+    return result
 
 
 def parse_visual_preferences(value: Any, errors: list[str]) -> dict[str, str]:
@@ -1757,6 +1922,8 @@ def assign_timeline(
 def build_agenda(
     data: dict[str, Any],
     source_dir: Path | None = None,
+    *,
+    facts_only: bool = False,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     normalized = deepcopy(data)
     errors: list[str] = []
@@ -1777,8 +1944,10 @@ def build_agenda(
     if not isinstance(meeting, dict):
         errors.append("meeting must be an object")
         meeting = {}
-    visual_preferences = parse_visual_preferences(
-        meeting.get("visual_preferences"), errors
+    visual_preferences = (
+        {}
+        if facts_only
+        else parse_visual_preferences(meeting.get("visual_preferences"), errors)
     )
     for field in ("number", "date", "start"):
         if is_unresolved(meeting.get(field)):
@@ -1800,6 +1969,17 @@ def build_agenda(
             ),
         ),
         errors,
+    )
+    if facts_only and any(
+        block.get("id") == "backstage" for block in custom_support_blocks
+    ):
+        errors.append(
+            "custom support block id 'backstage' conflicts with the built-in backstage component"
+        )
+    participant_pathways = (
+        parse_participant_pathways(normalized.get("participant_pathways"), errors)
+        if facts_only
+        else {}
     )
     officers = (
         parse_officers(club.get("officers"), errors)
@@ -1838,7 +2018,7 @@ def build_agenda(
                 "meeting.voting_qr_image",
             )
     theme_art_data = ""
-    if not is_unresolved(meeting.get("theme_image")):
+    if not facts_only and not is_unresolved(meeting.get("theme_image")):
         theme_art_data = resolve_support_image(
             meeting.get("theme_image"),
             resolved_source_dir,
@@ -1911,10 +2091,17 @@ def build_agenda(
         overrides,
         errors,
     )
+    if facts_only:
+        for item in items:
+            item["pathways"] = participant_pathways.get(item.get("owner", ""), "")
     attach_transition_overrides(items, transition_overrides, errors)
-    layout = select_layout(meeting, items, errors)
-    feature_item_id = select_feature_item(meeting, items, layout, errors)
-    visual_theme = select_visual_theme(meeting, items, errors)
+    layout = ""
+    feature_item_id: str | None = None
+    visual_theme = ""
+    if not facts_only:
+        layout = select_layout(meeting, items, errors)
+        feature_item_id = select_feature_item(meeting, items, layout, errors)
+        visual_theme = select_visual_theme(meeting, items, errors)
     validate_owners(items, errors)
     transition_minutes = apply_transitions(items, errors)
     target_item_minutes = declared_window - transition_minutes
@@ -1956,13 +2143,15 @@ def build_agenda(
     effective_window = minutes_from_ticks(
         minute_ticks(declared_window) + minute_ticks(approved_overtime)
     )
-    page_item_limit = 36 if layout == "marathon" else 30 if layout == "standard" else 28
-    if len(items) > page_item_limit:
-        errors.append(
-            f"single-page A4 capacity exceeded: {len(items)} agenda rows; "
-            f"reduce or combine content to {page_item_limit} rows or fewer"
+    if not facts_only:
+        page_item_limit = (
+            36 if layout == "marathon" else 30 if layout == "standard" else 28
         )
-    estimated_page_count = 1
+        if len(items) > page_item_limit:
+            errors.append(
+                f"single-page A4 capacity exceeded: {len(items)} agenda rows; "
+                f"reduce or combine content to {page_item_limit} rows or fewer"
+            )
 
     computed = {
         "status": (
@@ -1983,14 +2172,30 @@ def build_agenda(
         "declared_end": format_clock(declared_end),
         "final_end": format_clock(final_cursor),
         "row_count": len(items),
-        "page_count": estimated_page_count,
-        "layout": layout,
-        "feature_item": feature_item_id,
-        "visual_theme": visual_theme,
     }
+    if not facts_only:
+        computed.update(
+            {
+                "page_count": 1,
+                "layout": layout,
+                "feature_item": feature_item_id,
+                "visual_theme": visual_theme,
+            }
+        )
+
+    support_blocks = materialize_support_blocks(
+        language=language,
+        support_components=support_components,
+        custom_support_blocks=custom_support_blocks,
+        officers=officers,
+        club_intro=club_intro,
+        join_info=join_info,
+        vpm_qr_data=vpm_qr_data,
+        voting_qr_data=voting_qr_data,
+    )
 
     result = {
-        "schema_version": 2,
+        "schema_version": 3 if facts_only else 2,
         "club": {
             "name": str(club.get("name", "")).strip(),
             "default_location": str(club.get("default_location", "")).strip(),
@@ -2014,7 +2219,6 @@ def build_agenda(
                 "manager",
                 "president",
                 "approved_overtime_minutes",
-                "visual_preferences",
             )
             if key in meeting
         },
@@ -2022,21 +2226,89 @@ def build_agenda(
         "backstage": backstage,
         "computed": computed,
         "warnings": warnings,
-        "support_components": support_components,
-        "custom_support_blocks": custom_support_blocks,
-        "layout": layout,
-        "feature_item": feature_item_id,
-        "visual_theme": visual_theme,
-        "visual_preferences": visual_preferences,
-        "agenda_overrides": list(agenda_overrides.values()),
         "_assets": {
             "vpm_qr_data_uri": vpm_qr_data,
             "voting_qr_data_uri": voting_qr_data,
             "theme_art_data_uri": theme_art_data,
         },
     }
-    result["meeting"]["voting_qr_present"] = bool(voting_qr_data)
+    if facts_only:
+        result["support_blocks"] = support_blocks
+        for legacy_key in (
+            "support_components",
+            "officers",
+            "club_intro",
+            "join_info",
+            "vpm_qr_present",
+        ):
+            result["club"].pop(legacy_key, None)
+    else:
+        result["agenda_overrides"] = list(agenda_overrides.values())
+        result["support_components"] = support_components
+        result["custom_support_blocks"] = custom_support_blocks
+        if "visual_preferences" in meeting:
+            result["meeting"]["visual_preferences"] = meeting.get(
+                "visual_preferences"
+            )
+        result.update(
+            {
+                "layout": layout,
+                "feature_item": feature_item_id,
+                "visual_theme": visual_theme,
+                "visual_preferences": visual_preferences,
+            }
+        )
+        result["meeting"]["voting_qr_present"] = bool(voting_qr_data)
     return result, errors, warnings
+
+
+def append_materialized_support_markdown(
+    lines: list[str],
+    blocks: list[dict[str, Any]],
+    language: str,
+) -> None:
+    """Render V3 support facts without recreating copy from module constants."""
+
+    if not blocks:
+        return
+    lines.extend(
+        ["", f"## {localized('固定信息组件', 'Support Components', language)}"]
+    )
+    for block in blocks:
+        title = str(block.get("title", "")).strip()
+        kind = str(block.get("kind", block.get("type", ""))).strip()
+        lines.extend(["", f"### {title}", ""])
+        if kind in {"pairs", "timing"}:
+            if kind == "timing":
+                first_header = localized("时长区间", "Timing band", language)
+                second_header = localized("提示规则", "Signals", language)
+            elif block.get("id") == "officers":
+                first_header = localized("职务", "Role", language)
+                second_header = localized("姓名", "Name", language)
+            else:
+                first_header = localized("项目", "Item", language)
+                second_header = localized("内容", "Details", language)
+            lines.extend(
+                [
+                    f"| {first_header} | {second_header} |",
+                    "|---|---|",
+                ]
+            )
+            for entry in block.get("entries", []):
+                if not isinstance(entry, dict):
+                    continue
+                lines.append(
+                    f"| {entry.get('label', '')} | {entry.get('value', '')} |"
+                )
+        elif kind == "prose":
+            lines.extend(str(value) for value in block.get("lines", []) if value)
+        elif kind == "image":
+            alt = str(block.get("alt", title)).strip()
+            lines.append(f"- {alt}")
+        else:
+            lines.extend(
+                f"- {value}" for value in block.get("lines", []) if value
+            )
 
 
 def render_markdown(result: dict[str, Any]) -> str:
@@ -2056,6 +2328,7 @@ def render_markdown(result: dict[str, Any]) -> str:
             "time_col": "Time",
             "agenda": "Agenda",
             "owner": "Role Taker",
+            "pathways": "Pathways",
             "duration": "Duration",
             "backstage": "Backstage Team",
             "summary": "Time check",
@@ -2072,6 +2345,7 @@ def render_markdown(result: dict[str, Any]) -> str:
             "time_col": "时间 / Time",
             "agenda": "会议流程 / Agenda",
             "owner": "负责人 / Role Taker",
+            "pathways": "Pathways 进展 / Progress",
             "duration": "时长 / Duration",
             "backstage": "幕后团队 / Backstage Team",
             "summary": "时间校验 / Time check",
@@ -2088,6 +2362,7 @@ def render_markdown(result: dict[str, Any]) -> str:
             "time_col": "时间",
             "agenda": "会议流程",
             "owner": "负责人",
+            "pathways": "Pathways 进展",
             "duration": "时长",
             "backstage": "幕后团队",
             "summary": "时间校验",
@@ -2105,25 +2380,47 @@ def render_markdown(result: dict[str, Any]) -> str:
     for label, value in metadata:
         if not is_unresolved(value):
             lines.append(f"- {label}：{value}")
-    lines.extend(
-        [
-            "",
-            f"| {labels['time_col']} | {labels['agenda']} | {labels['owner']} | {labels['duration']} |",
-            "|---|---|---|---:|",
-        ]
+    show_pathways = any(
+        str(item.get("pathways", "")).strip() for item in result["timeline"]
     )
+    if show_pathways:
+        lines.extend(
+            [
+                "",
+                f"| {labels['time_col']} | {labels['agenda']} | {labels['owner']} | "
+                f"{labels['pathways']} | {labels['duration']} |",
+                "|---|---|---|---|---:|",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                f"| {labels['time_col']} | {labels['agenda']} | {labels['owner']} | {labels['duration']} |",
+                "|---|---|---|---:|",
+            ]
+        )
     last_section = None
     for item in result["timeline"]:
         current_section = section_label(item["section"], language)
         if current_section != last_section:
-            lines.append(f"|  | **{current_section}** |  |  |")
+            if show_pathways:
+                lines.append(f"|  | **{current_section}** |  |  |  |")
+            else:
+                lines.append(f"|  | **{current_section}** |  |  |")
             last_section = current_section
         details = "<br>".join(item.get("details", []))
         activity = item["label"] + (f"<br><small>{details}</small>" if details else "")
-        lines.append(
-            f"| {item['start']}-{item['end']} | {activity} | {item['owner']} | "
-            f"{format_minutes(item['duration'])} min |"
-        )
+        if show_pathways:
+            lines.append(
+                f"| {item['start']}-{item['end']} | {activity} | {item['owner']} | "
+                f"{item.get('pathways', '')} | {format_minutes(item['duration'])} min |"
+            )
+        else:
+            lines.append(
+                f"| {item['start']}-{item['end']} | {activity} | {item['owner']} | "
+                f"{format_minutes(item['duration'])} min |"
+            )
     lines.extend(
         [
             "",
@@ -2138,6 +2435,13 @@ def render_markdown(result: dict[str, Any]) -> str:
             f"{row['label']}：{row['person']}" for row in result["backstage"]
         )
         lines.extend(["", f"**{labels['backstage']}：** {backstage_text}"])
+    if "support_blocks" in result:
+        append_materialized_support_markdown(
+            lines,
+            result.get("support_blocks", []),
+            language,
+        )
+        return "\n".join(lines) + "\n"
     support_components = result.get("support_components", [])
     custom_support_blocks = result.get("custom_support_blocks", [])
     if support_components or custom_support_blocks:
@@ -3118,6 +3422,11 @@ def main() -> None:
     )
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument(
+        "--facts-only",
+        action="store_true",
+        help="build the V3 fact source and Markdown without rendering HTML",
+    )
+    parser.add_argument(
         "--html-renderer",
         choices=sorted(HTML_RENDERERS),
         default="auto",
@@ -3191,7 +3500,11 @@ def main() -> None:
         print(json.dumps({"ok": False, "errors": [str(exc)]}, ensure_ascii=False, indent=2), file=sys.stderr)
         raise SystemExit(2)
 
-    result, errors, warnings = build_agenda(data, source_dir=input_path.parent)
+    result, errors, warnings = build_agenda(
+        data,
+        source_dir=input_path.parent,
+        facts_only=args.facts_only,
+    )
     summary = {
         "ok": not errors,
         "computed": result["computed"],
@@ -3212,7 +3525,6 @@ def main() -> None:
 
     computed_path = output_dir / "agenda.computed.json"
     markdown_path = output_dir / "agenda.md"
-    html_path = output_dir / "agenda.html"
     computed_result = deepcopy(result)
     computed_result.pop("_assets", None)
     computed_path.write_text(
@@ -3220,20 +3532,24 @@ def main() -> None:
         encoding="utf-8",
     )
     markdown_path.write_text(render_markdown(result), encoding="utf-8")
-    try:
-        resolved_html_renderer = resolve_html_renderer(result, args.html_renderer)
-        rendered_html = render_output_html(result, resolved_html_renderer)
-    except (OSError, ValueError) as exc:
-        print(
-            json.dumps(
-                {**summary, "ok": False, "errors": [*errors, str(exc)]},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
-    html_path.write_text(rendered_html, encoding="utf-8")
+    resolved_html_renderer: str | None = None
+    html_path: Path | None = None
+    if not args.facts_only:
+        html_path = output_dir / "agenda.html"
+        try:
+            resolved_html_renderer = resolve_html_renderer(result, args.html_renderer)
+            rendered_html = render_output_html(result, resolved_html_renderer)
+        except (OSError, ValueError) as exc:
+            print(
+                json.dumps(
+                    {**summary, "ok": False, "errors": [*errors, str(exc)]},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        html_path.write_text(rendered_html, encoding="utf-8")
 
     saved_profile_path: Path | None = None
     if args.save_profile:
@@ -3262,9 +3578,15 @@ def main() -> None:
                 "outputs": {
                     "computed_json": str(computed_path),
                     "markdown": str(markdown_path),
-                    "html": str(html_path),
                     "diagnostics": str(diagnostics_path),
-                    "html_renderer": resolved_html_renderer,
+                    **(
+                        {
+                            "html": str(html_path),
+                            "html_renderer": resolved_html_renderer,
+                        }
+                        if html_path is not None
+                        else {}
+                    ),
                     **(
                         {"club_profile": str(saved_profile_path)}
                         if saved_profile_path

@@ -1,8 +1,8 @@
-# V2 最小输入结构
+# V3 最小输入结构
 
 meeting JSON 是 Skill 内部的生成器输入，不是要求用户填写的表单。Skill 应先从当前消息、接龙和附件中主动识别已有事实，只询问无法判定的少量信息；旧会单为可选参考。
 
-meeting JSON 只保存“本期事实”。不要让模型填写派生的完整时间轴、各行开始时间、默认时长、转场、CSS、尺寸或坐标；这些全部由生成器补齐。可以传递用户明确选择的语义版式、重点环节和主题方向。
+meeting JSON 只保存“本期事实”。不要让模型填写派生的完整时间轴、各行开始时间、默认时长、转场、视觉重点、CSS、尺寸或坐标；这些分别由计算层和视觉层处理。
 
 所有显式 `minutes`、`transition_after` 和 `approved_overtime_minutes` 都支持 0.5 分钟递增。输入 0.5 就按 30 秒计算，不通过修改其他环节补数。
 
@@ -23,19 +23,12 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
     "word_of_day": "学习",
     "manager": "会议经理",
     "president": "会长姓名",
-    "layout": "auto",
-    "feature_item": null,
-    "visual_theme": "auto",
-    "visual_preferences": {
-      "text_size": "standard",
-      "feature_emphasis": "standard",
-      "owner_alignment": "default"
-    },
     "approved_overtime_minutes": 0
   },
   "roles": [],
   "prepared_speeches": [],
   "impromptu": null,
+  "participant_pathways": {},
   "backstage": [],
   "special_segments": [],
   "standard_overrides": [],
@@ -64,7 +57,7 @@ meeting JSON 只保存“本期事实”。不要让模型填写派生的完整�
 首次初始化并确认后，下面的命令会在生成成功后自动创建 profile：
 
 ```bash
-python3 "$SKILL_DIR/scripts/build_agenda.py" meeting.json --club-profile "星河头马演讲俱乐部" --output-dir output
+python3 "$SKILL_DIR/scripts/run_agenda.py" draft meeting.json --club-profile "星河头马演讲俱乐部" --output-dir output
 ```
 
 之后的新任务继续使用同一命令；生成器会在校验前加载 profile，meeting JSON 无需重复俱乐部稳定字段。如果当前资料库有多家俱乐部而用户未说名称，先只问“这是哪家俱乐部？”，不用地点自行猜测。
@@ -129,8 +122,7 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
         "DL - 动态领导",
         "PM - 精通演讲",
         "VC - 愿景沟通"
-      ],
-      "placement": "auto"
+      ]
     }
   ]
 }
@@ -138,9 +130,8 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 
 - `id`、`title` 和至少一条 `lines` 必填；
 - 内容只按纯文本渲染，不接受 HTML；
-- `placement` 可为 `auto`、`left` 或 `bottom`，默认 `auto`。`left` 是兼容字段名，意思是“放入当前版式的侧边信息栏”；在 `feature` 中实际会显示在右侧。
 - `club.custom_support_blocks` 保存俱乐部常用块；`meeting.custom_support_blocks` 存在时完整覆盖俱乐部列表；
-- 排版器按内容体量在当前版式的侧栏、横向条与底部之间装箱；具体位置见 [版式路由与主题视觉系统](visual-system.md)。内容太多时由单页 A4 导出校验阻断。
+- 自定义块在内容层不写左右、底部或列宽。内容确认后，由 `agenda.view.json` 将其放入运营信息或背景信息，并决定同组阅读顺序。
 
 ## 2. 本期会议
 
@@ -151,11 +142,6 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 - `location`：可省略，回退到俱乐部默认地点。
 - `theme`、`word_of_day`、`manager`：有则显示。
 - `president`：用于会长致辞与闭幕；不是长期俱乐部配置。
-- `layout`：`auto`、`standard`、`feature` 或 `marathon`。默认 `auto`；除非用户明确选择，不需要追问。
-- `feature_item`：可选的本期环节 ID，用于多个重点候选时指定主舞台，例如 `special:2` 或 `prepared_speech:1`。用户未指定时不需追问，生成器自动选时长最长者，同长选更早出现者。
-- `visual_theme`：`auto`、`general`、`learning`、`technology`、`wellness`、`voice`、`leadership` 或 `celebration`。默认优先从本期主题和今日一词识别。
-- `visual_preferences`：用户可理解的本期视觉调整。`text_size` 可为 `compact / standard / large`；`feature_emphasis` 可为 `compact / standard / strong`；`owner_alignment` 可为 `default / left / center`。用户只需说“整体字大一点”“重点块小一点”或“负责人都左对齐”，不向用户暴露字段名。
-- `theme_image`：可选的 PNG/JPG/SVG/WebP 主题图路径。图中不得包含文字、Logo、人名、时间或二维码；相对路径以 meeting JSON 所在目录为基准。
 - `approved_overtime_minutes`：默认 `0`，支持 0.5 分钟递增。只有用户明确同意当前计算所需的准确分钟数后才能写入；内容变化后若超时分钟数不同，旧授权自动失效。
 - `support_components`：可选；本期需要改变俱乐部常用组合时覆盖 `club.support_components`。
 - `voting_qr_image`：选择 `voting_qr` 组件时必填。
@@ -229,7 +215,25 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 - 数字时长代表用户明确锁定；`null` 或省略交给程序计算。
 - 即兴和即兴点评都未锁定时，程序按 0.5 分钟步进在剩余时间内求解，使即兴点评约等于即兴演讲的一半，并让整场闭合；有等价解时优先整分钟。
 
-## 6. 幕后团队
+## 6. 可选 Pathways 进展
+
+只有用户提供真实资料并希望显示 Pathways 列时，才加入：
+
+```json
+{
+  "participant_pathways": {
+    "成员A": "PM L1",
+    "成员B": "DL L2"
+  }
+}
+```
+
+- 键使用会单中出现的负责人姓名，值使用用户提供的简短进展；
+- 程序按姓名精确匹配，不从会员身份、演讲项目或其他人的记录猜测；
+- 没有匹配资料的负责人保持空白，不用破折号制造假信息；
+- 这只是本期内容事实，不自动写入俱乐部长期 profile。
+
+## 7. 幕后团队
 
 ```json
 {
@@ -243,7 +247,7 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 
 幕后团队不进入时间轴。摄影师只会被标准合影/休息环节引用，不会自行生成台前环节。
 
-## 7. 特殊环节
+## 8. 特殊环节
 
 ```json
 {
@@ -261,12 +265,12 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 
 - `title`、`owner`、`minutes` 必填。
 - `owner` 必须是本期真实负责人姓名；不能用“Toastmaster”“主持人”“待定”等角色称呼代替。材料没有姓名时询问用户。
-- `details` 可选，用字符串或字符串数组表达主题、形式或过程要点；进入 `feature` 版式时显示在专题舞台内。
+- `details` 可选，用字符串或字符串数组表达主题、形式或过程要点；视觉层可在重点行中作为辅助说明显示。
 - `after` 可省略，默认放在嘉宾介绍之后。
 - 可用锚点包括 `guest_introduction`、`prepared_speech:1`、`table_topics`、`photo_break`、`prepared_evaluation:1`、`sharing` 等。
 - 特殊环节按数组顺序取得稳定 ID：第一项为 `special:1`，第二项为 `special:2`，以此类推；后续覆盖和锚点使用这个 ID。
 
-## 8. 任意环节统一覆盖（推荐）
+## 9. 任意环节统一覆盖（推荐）
 
 用户对本期已存在环节的修改，统一使用 `agenda_overrides`，不需要先判断它是标准环节、角色触发环节还是演讲点评：
 
@@ -296,7 +300,7 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 
 覆盖在全部标准、角色和特殊环节完成组装后应用，然后程序按本期顺序重新求解整场时间。不允许直接覆盖 `start / end`，它们始终由程序派生。`after` 只改变相对顺序，默认保留环节原来的阶段；确实要跨阶段时再同时写 `section`。`after` 不能指向自身、已取消环节或形成循环。
 
-## 8.1 旧版标准环节覆盖（兼容）
+## 9.1 旧版标准环节覆盖（兼容）
 
 只写本期明确变化，不要把全部默认环节重复一遍：
 
@@ -317,7 +321,7 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 - `label`：覆盖显示名称；
 - `transition_after`：覆盖默认转场分钟数，可使用 `0.5`。
 
-## 8.2 旧版任意环节转场覆盖（兼容）
+## 9.2 旧版任意环节转场覆盖（兼容）
 
 备稿点评、即兴点评、时间官/哼哈官/语法官报告等角色触发环节不属于 `standard_overrides`。需要单独调整它们的转场时，使用：
 
@@ -338,13 +342,19 @@ profile 保存俱乐部名称、默认地点、语言、固定组件、当届官
 - `minutes` 支持 `0`、`0.5`、`1` 等 0.5 分钟递增；
 - 同一环节不要同时在两处覆盖转场。
 
-## 9. 输出与退出码
+## 10. 内部视觉意图
+
+用户确认 `agenda.md` 后，AI 另行生成 `agenda.view.json`。它只表达本期强调的环节、显示列、运营/背景组件顺序、密度、字号档位和对比度；不进入 meeting JSON，也不复制姓名、时间和正文。
+
+完整合同见 [V3 视觉意图](v3-view-intent.md)。以下内容一律禁止进入 view：模板名、会议类型、左右位置、坐标、列宽、CSS、HTML、隐藏/截断、整体缩放和按时长分配面积。
+
+## 11. 输出与退出码
 
 ```bash
-python3 scripts/build_agenda.py meeting.json --output-dir output
+python3 scripts/run_agenda.py draft meeting.json --output-dir output
 ```
 
-- 退出码 `0`：负责人完整、时间闭合，计算 JSON、Markdown 和 HTML 已生成。
+- 退出码 `0`：负责人完整、时间闭合，只生成计算 JSON、Markdown、诊断和阶段清单；不生成 HTML。
 - 退出码 `2`：输入、负责人、角色关系或时间闭合失败；按错误修正或向用户确认。
 
-HTML 仍需经 `export_a4.py` 验证。只有实际 PDF 为 1 页 A4 竖版时才能交付；如果浏览器排版产生第 2 页，导出器会删除无效 PDF 并退出 `2`。
+内容确认后再运行 `preview` 生成真实 A4 样式稿；样式确认后运行 `final`。只有实际 PDF 为 1 页 A4 竖版时才能交付；如果浏览器排版产生第 2 页，导出器会删除无效 PDF 并退出 `2`。

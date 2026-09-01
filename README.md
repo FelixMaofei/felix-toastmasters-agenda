@@ -17,8 +17,8 @@
 1. 先读你当前发来的文字、图片和附件，不重复追问已有信息。
 2. 已经用过的俱乐部，会继承已确认的名称、地点、语言和常用信息；新俱乐部也不会因为没有旧会单而停下。
 3. 如果真有影响成品的信息缺失，会先说出已识别的内容，再把缺项合并成一次短询问。
-4. 信息够用后先做出可核对的会单，自动重算环节、转场和结束时间，再导出一页 A4 PDF 和分享图。
-5. 你可以继续用人话修改；如果新版未通过单页检查，上一份可用成品仍会保留。
+4. 信息够用后先给文字会单，确认“本期到底有什么”；再给真实 A4 样式稿，确认“是否清楚好看”。
+5. 只有内容和样式都确认后，才导出一页 A4 PDF 和分享图；如果新版未通过单页检查，上一份可用成品仍会保留。
 
 如果当前电脑暂时缺少导出条件，会先保留已完成的会单内容，再用人话给你一个最短处理建议，不会把报错和内部命令丢给你。
 
@@ -43,10 +43,18 @@
 
 这些情况会尽量合并为一次人话询问。不会因为没有旧会单、你不需要了解内部技术，或者你只想把字改大一点而卡住。
 
+## V3 为什么分三步
+
+- **内容确认**：姓名、顺序、时长、地点和固定信息先说清楚。
+- **样式确认**：同一份内容只调整重点、对齐、留白、对比和字号。
+- **文件输出**：只导出已经确认的页面，不重新计算，也不临时换设计。
+
+这样“内容准确”和“视觉好看”不会互相污染，用户也不用理解任何内部配置。
+
 ## 会单内容能有多灵活
 
 - 支持中文、英文和中英双语；
-- 支持普通例会、重点环节和演讲马拉松等不同密度；
+- 同一套设计系统兼容普通例会、重点环节、演讲马拉松和角色密集会单；
 - 支持新角色、新环节、工作坊、微课、圆桌和其他本期特殊安排；
 - 时长、转场和超时授权支持 0.5 分钟；
 - 即兴演讲与即兴点评联动计算；
@@ -79,16 +87,17 @@ git clone https://github.com/FelixMaofei/felix-toastmasters-agenda.git ~/.workbu
 
 AI 负责理解用户、识别附件和映射本期变化；确定性程序负责时间闭合、姓名与关系检查、单页 A4 和品牌底线。这是“聪明模型 + 确定性验证”，不预设任何模型只能机械提取。
 
-主要入口：
+V3 主要入口：
 
 ```bash
 SKILL_DIR="/path/to/felix-toastmasters-agenda"
 python3 "$SKILL_DIR/scripts/run_agenda.py" doctor
-python3 "$SKILL_DIR/scripts/run_agenda.py" prepare meeting.json --club-profile "俱乐部完整名称" --output-dir output
-python3 "$SKILL_DIR/scripts/run_agenda.py" finalize output/agenda.html --output-dir output
+python3 "$SKILL_DIR/scripts/run_agenda.py" draft meeting.json --club-profile "俱乐部完整名称" --output-dir output
+python3 "$SKILL_DIR/scripts/run_agenda.py" preview output/agenda.computed.json --view output/agenda.view.json --output-dir output
+python3 "$SKILL_DIR/scripts/run_agenda.py" final output/agenda.preview.html --output-dir output
 ```
 
-依赖：Python 3 负责计算和生成；Chrome、Chromium 或 Edge 负责导出 A4 PDF；Poppler 可优先生成逐页 PNG，缺失时使用浏览器长图兜底。
+依赖：Python 3 负责确定性计算和生成；Chrome、Chromium 或 Edge 负责真实 A4 预览与 PDF；Poppler 可优先生成高清 PNG，缺失时使用浏览器兜底。缺少导出环境时，已经完成的文字会单仍会保留。
 
 匿名输入示例见 `examples/meeting.example.json`。本地分发包应使用 `scripts/package_local.py` 生成，它只打包运行所需文件并在生成 ZIP 前扫描私有路径和内容。
 
@@ -97,5 +106,7 @@ python3 "$SKILL_DIR/scripts/run_agenda.py" finalize output/agenda.html --output-
 - [`references/input-schema.md`](references/input-schema.md)
 - [`references/agenda-rules.md`](references/agenda-rules.md)
 - [`references/local-model-workflow.md`](references/local-model-workflow.md)
+- [`references/v3-architecture.md`](references/v3-architecture.md)
+- [`references/v3-view-intent.md`](references/v3-view-intent.md)
 
 最终只允许交付 1 页 A4 竖版 PDF 和 1 张 PNG。内容放不下时停止替换成品，保留上一版，再让用户在 1–2 个业务选择中决定。

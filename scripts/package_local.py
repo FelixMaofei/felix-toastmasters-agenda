@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -21,8 +22,12 @@ FILES = [
     "references/agenda-rules.md",
     "references/input-schema.md",
     "references/local-model-workflow.md",
+    "references/v3-architecture.md",
+    "references/v3-view-intent.md",
     "references/visual-system.md",
+    "assets/agenda.css",
     "scripts/build_agenda.py",
+    "scripts/agenda_renderer.py",
     "scripts/editorial_renderer.py",
     "scripts/export_a4.py",
     "scripts/run_agenda.py",
@@ -35,11 +40,10 @@ DIRECTORIES = [
     "assets/themes",
 ]
 
-PRIVATE_MARKERS = (
-    "/Users/maofei",
-    "明源云",
-    "金地威新",
-    "MBTI认识自己",
+PRIVATE_PATTERNS = (
+    (re.compile(r"(?:/Users/|/home/)[A-Za-z0-9._-]+"), "absolute home path"),
+    (re.compile(r"[A-Za-z]:\\Users\\[^\\\s]+"), "Windows home path"),
+    (re.compile(r"\bPN-\d{6,}\b"), "membership number"),
 )
 
 
@@ -71,14 +75,15 @@ def scan_text_files(target: Path) -> None:
             ".yaml",
             ".yml",
             ".html",
+            ".css",
             ".svg",
             ".txt",
         }:
             continue
         text = path.read_text(encoding="utf-8")
-        for marker in PRIVATE_MARKERS:
-            if marker in text:
-                problems.append(f"{path.relative_to(target)} contains {marker!r}")
+        for pattern, label in PRIVATE_PATTERNS:
+            if pattern.search(text):
+                problems.append(f"{path.relative_to(target)} contains {label}")
     if problems:
         raise ValueError("local package privacy scan failed: " + "; ".join(problems))
 

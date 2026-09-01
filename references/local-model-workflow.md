@@ -1,109 +1,102 @@
 # 自然语言与受控执行工作流
 
-适用 WorkBuddy、Codex 和其他能执行本地命令的 Agent。模型负责理解用户、映射本期变化和提出可操作方案；程序负责时间计算、A4 适配和最终验证。不因模型不同而预设它只能做机械提取。
+适用 WorkBuddy、Codex 和其他能执行本地命令的 Agent。模型负责理解用户、映射本期变化和判断信息重点；程序负责时间计算、确定性排版和文件导出。不因模型不同而预设它只能做机械提取。
 
-Skill 已内置 Logo、图标、主题纹理和可合法分发的中英文字体。准备和导出全程不需联网，也不需本地模型改 CSS。
+Skill 内置官方 Logo 和可分发字体。正常工作不联网，也不让模型每期重写 CSS。
 
-## 首轮先问，不执行
+## 首轮先读材料，再决定是否问
 
-首次材料里只要会单语言、固定信息选择或已出现环节的真实负责人有一项未确认，就用一条普通文字消息合并询问并结束当前轮次。不要调用 `AskUserQuestion`，不要先运行命令或创建文件；当前 Agent 没有专用提问工具也不能自行选择默认值、取消环节或继续生成。面向用户只展示已识别事实和缺项，不解释内部“阻断门”。
+先检查当前消息、图片、附件和文件名。已有事实不再问。再按完整俱乐部名称查找 profile；没有旧会单或 profile 也要继续初始化。
+
+只有会单语言、固定信息选择或已出现环节的真实负责人等关键信息仍无法判断时，才用一条普通消息合并询问并结束当前轮。不要先运行命令、创建半成品或把字段名扔给用户。
 
 ## 绝对不要做
 
 - 不要求用户自己写 JSON；
 - 不要求每期提供旧会单；
-- 不要手算开始时间、结束时间、转场或剩余分钟；
-- 不要修改 `agenda.computed.json` 或已安装 Skill 的模板；用户要求的本期视觉优化先用 `visual_preferences`，必要时只修改输出目录中的 HTML 副本并重新验证；
-- 不要联网找图、换图标、调色或另做一张图；
-- 不要跳过 `finalize`的视觉审计直接打印。
-- 不要用 `find ~` 或其他宽泛搜索寻找 Skill、profile 或历史会单；
-- 正常工作先执行 `scripts/run_agenda.py`；只有出现 traceback、无法执行或用户明确要求维护 Skill 时才检查源码。
-- 当前消息已经明显缺负责人、语言或固定信息选择时，先合并问用户；不要先列 Skill 目录、读源码或运行环境检查。
+- 不手算开始时间、结束时间、转场或剩余分钟；
+- 不让用户选择 renderer、模板、CSS 或 Python 权限；
+- 不把会议类型、时长或剩余面积当作版式路由；
+- 不跳过文字确认和样式确认；
+- 不用图片模型重排会单文字，也不生成或修复二维码；
+- 不用宽泛主目录搜索寻找 Skill、profile 或历史会单；
+- 当前消息明显有真实缺项时，不先检查源码和运行环境。
 
-## 先确定 Skill 目录
+## 第 1 步：提取本期事实
 
-- WorkBuddy 默认直接使用 `~/.workbuddy/skills/felix-toastmasters-agenda`；
-- 路径不存在时，再使用当前平台加载 Skill 时显示的 Base directory；
-- 不向用户询问安装路径，不搜索整个主目录。
-- Skill 工具已经返回 Base directory 时直接使用，不再 `ls` 或遍历目录。
-
-## 第 0 步：事实齐全后，只检查一次环境
-
-```bash
-python3 "$SKILL_DIR/scripts/run_agenda.py" doctor
-```
-
-返回 `ok: true` 就继续。如果缺 Chrome/Chromium，用人话说明“会单内容可以先完成，但当前电脑暂时不能导出 PDF/PNG”，保留已生成 HTML，再给出一个最短的环境处理建议。
-
-## 第 1 步：从当前消息提取本期事实
-
-先看用户当前粘贴的角色接龙、会议说明和附件。已出现的信息不再问。
-
-只生成 `meeting.json`，主要是：
+只生成内部 `meeting.json`：
 
 - `meeting`：期数、日期、正式开始/结束、本期地点、主题、今日一词、会议经理、会长；
 - `roles`：接龙中真实出现的功能角色，保留顺序；
 - `prepared_speeches`：每篇将演讲者、题目、时长、同编号点评人放在同一对象；
 - `impromptu`：即兴主持、即兴点评人；用户没给时长就保留 `null`；
 - `backstage`：拍照、场控/PPT、投票链接等，不进时间轴；
-- `special_segments`：工作坊、微课等本期特殊环节，必须有负责人、时长和相对位置。
+- `special_segments`：工作坊、微课等本期特殊环节，必须有负责人、时长和相对位置；
+- `participant_pathways`：仅在用户提供真实 Pathways 进展时，用姓名映射到 `PM L1` 等文字。
 
-特殊环节负责人必须是真实姓名；不能把“Toastmaster”“主持人”“待定”等角色称呼当负责人。没有姓名就与其他缺项一起问。
+接龙明确顺序优先。若自动环节与接龙顺序不同，用 `agenda_overrides.after` 表达；不要改源码或接受错误顺序。字段和空值语义不清楚时，只读 [输入结构](input-schema.md)。
 
-接龙明确写出的现场顺序优先。若某个自动生成环节与接龙顺序不同，用 `agenda_overrides.after` 表达“放在谁之后”，不要改源码或接受错误顺序。顺序变化默认保留原阶段；用户也明确改变阶段时才增加 `section`。
-
-字段和空值语义不清楚时，只读 [输入结构](input-schema.md)。不预读 Python 源码或测试。
-
-不要先手算整场时间来代替程序，也不要在第一次生成前浏览模板、视觉系统或源码。先按已知事实运行 `prepare`，只对真实返回的冲突做下一步。
-
-## 第 2 步：准备会单
-
-始终使用俱乐部完整名称：
+## 第 2 步：生成文字会单
 
 ```bash
-python3 "$SKILL_DIR/scripts/run_agenda.py" prepare meeting.json \
+python3 "$SKILL_DIR/scripts/run_agenda.py" draft meeting.json \
   --club-profile "俱乐部完整名称" \
   --output-dir output
 ```
 
-- 退出 `0`：读取 `output/agenda.md` 自检姓名、顺序、时长和地点；没有事实疑问且用户未要求只看草稿时，直接继续导出；
-- 退出 `2`：只按 `errors` 中的缺失/冲突项询问，修改 `meeting.json` 后重跑；
-- 不把 `warnings` 当成错误，但要把异常自动时长告诉用户。
+- 退出 `0`：读取 `output/agenda.md`，向用户展示并确认姓名、顺序、时长、地点和固定信息；此目录不应有 HTML。
+- 退出 `2`：只按 `errors` 中的缺失或冲突处理；超时只询问准确分钟数。
+- 内容反馈修改 meeting JSON 后重跑 `draft`。用户确认内容前停止，不进入视觉层。
 
-## 第 3 步：完成导出并检查最终 A4
+Python 不可用时，先保留已识别的会议事实并用人话说明“当前电脑暂时不能完成可靠的时间重算”；不要把未经计算的手排时间冒充闭合会单。
 
-用 `prepare` 返回的 `finalize_command`，或运行：
+## 第 3 步：生成样式确认稿
+
+内容确认后，根据 [V3 视觉意图](v3-view-intent.md) 生成内部 `output/agenda.view.json`：
+
+- 主议程永远是第一使用重点；
+- 最多强调一个真实环节，不因时长长自动强调；
+- 只有计算结果存在真实数据时才显示 Pathways 等辅助列；
+- 每个固定组件恰好出现一次，并分入运营信息或背景信息；
+- view 不包含模板名、左右位置、列宽、CSS、HTML、隐藏、截断和整体缩放。
+
+需要导出时只检查一次环境：
 
 ```bash
-python3 "$SKILL_DIR/scripts/run_agenda.py" finalize output/agenda.html \
+python3 "$SKILL_DIR/scripts/run_agenda.py" doctor
+```
+
+随后运行：
+
+```bash
+python3 "$SKILL_DIR/scripts/run_agenda.py" preview output/agenda.computed.json \
+  --view output/agenda.view.json \
   --output-dir output
 ```
 
-必须同时看到：
+必须打开真实 `agenda.preview.png`，检查整页层级、主流程原始字号、负责人列、对齐、裁切、重叠、空卡和组件内部死空白。再把预览给用户确认是否好看。自动检查通过不等于用户已经认可。
 
-```text
-ok: true
-stage: finalized
-pages: 1
-visual_audit: passed
+Chrome/Chromium 不可用时，文字会单仍然有效；保留它并给一个最短环境建议，不交付未经真实渲染的视觉成品。
+
+## 第 4 步：导出确认后的文件
+
+用户确认样式后运行：
+
+```bash
+python3 "$SKILL_DIR/scripts/run_agenda.py" final output/agenda.preview.html \
+  --output-dir output
 ```
 
-`classic` 与 `editorial` 成品都必须返回 `visual_audit: passed`。随后打开最终 `agenda.png`，确认负责人列同列、无截断重叠、字号可读，才能向用户说“完成”。
-
-## 询问原则
-
-- 一次只合并询问真正阻断生成的缺失事实；
-- “你直接做”“我不懂配置”不是语言或固定信息区选择；这两项未明确时仍给出推荐并问一次。
-- 用人话问，不暴露 JSON 字段名；
-- 用户说“OK”代表停止继续改版并交付当前成品，不再追问；
-- 成品生成后停止，不为了“更好看”自行继续改版。
-- 最终回复只交付 PDF/PNG，并用人话说明时间闭合和本轮变化；不向普通用户罗列 HTML、JSON、profile、版式代号、主题代号或制作过程。
-- 只有用户明确要求长期修改且命令真实成功时，才说“已保存为以后默认”；本期 `meeting.*` 变化不能这样描述。
+必须看到 `ok: true`、`stage: finalized` 和 `pages: 1`。随后再次打开最终 PNG，确认它与已确认预览一致，再交付 PDF/PNG。`final` 不读取 meeting JSON，不重新计算，不改变 HTML。
 
 ## 用户要求调整时
 
-- 用户说“这一期改成……”就是对本期可逆调整的授权，不询问 CSS、JSON 或程序权限；
-- 时长、负责人、名称、开关、转场和本期相对顺序写入 `agenda_overrides`；
-- 整体字号、重点环节突出程度和负责人对齐方式写入 `meeting.visual_preferences`；
-- 重新运行 `prepare` 后先对照上一版 `agenda.computed.json`；纯视觉反馈不得改变姓名、顺序、时长和地点，然后直接 `finalize`；
-- 如果调整无法通过一页 A4，保留上一份成品，向用户给出 1-2 个业务选择，不暴露内部实现。
+- 时长、负责人、名称、开关、转场和顺序属于内容变化，写入 `agenda_overrides` 后回到 `draft`；
+- “字大一点”“重点弱一点”“加入 Pathways 列”“俱乐部介绍放后面”属于视觉变化，只改 `agenda.view.json` 后重跑 `preview`；
+- “负责人没对齐、有死空白、列宽难看”是 renderer 问题，不给 view 增加字段，也不让用户授权改技术；
+- 纯视觉调整前后，计算结果中的姓名、顺序、时长、地点和正文必须一致；
+- 如果一页装不下，保留上一份可用成品，只给 1-2 个业务取舍选项。
+
+## 完成回复
+
+最终只说明：会单已完成、时间是否闭合、本轮变化是否落实，并交付 PDF/PNG。不要向普通用户展示 JSON、HTML、profile 路径、技术阶段或检查日志。用户说“OK”“就这样”表示停止继续改版。只有长期设置确实更新成功时，才说“以后默认沿用”。

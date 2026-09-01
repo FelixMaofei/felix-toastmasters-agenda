@@ -341,7 +341,7 @@ def main() -> None:
                 pdftoppm,
                 "-png",
                 "-r",
-                "160",
+                "200",
                 "-singlefile",
                 str(pdf_path),
                 str(output_dir / "agenda"),
@@ -351,7 +351,7 @@ def main() -> None:
                 pdftoppm,
                 "-png",
                 "-r",
-                "160",
+                "200",
                 str(pdf_path),
                 str(output_dir / "agenda-page"),
             ]

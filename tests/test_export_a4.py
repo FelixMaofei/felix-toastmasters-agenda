@@ -161,7 +161,7 @@ class ClassicBrowserAuditTests(unittest.TestCase):
             (ROOT / "examples" / "meeting.example.json").read_text(encoding="utf-8")
         )
         long_location = (
-            "深圳南山海岸城共享会议室 3A / Zoom 861 204 7788 / "
+            "Example District Shared Meeting Room 3A / Zoom meeting / "
             "Meeting Room and Online"
         )
         data["club"]["default_location"] = long_location
