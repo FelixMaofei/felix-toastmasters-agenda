@@ -44,6 +44,43 @@ def valid_png() -> bytes:
     return b"\x89PNG\r\n\x1a\n" + (b"N" * 1100)
 
 
+def write_preview_bundle(directory: Path) -> tuple[Path, bytes, bytes]:
+    directory.mkdir(parents=True, exist_ok=True)
+    html_path = directory / "agenda.preview.html"
+    pdf_path = directory / "agenda.preview.pdf"
+    png_path = directory / "agenda.preview.png"
+    html_path.write_text(
+        '<html><head><meta name="agenda-workflow" content="v3-preview">'
+        '<meta name="agenda-page-count" content="1"></head>'
+        "<body>approved</body></html>",
+        encoding="utf-8",
+    )
+    pdf_bytes = valid_pdf()
+    png_bytes = valid_png()
+    pdf_path.write_bytes(pdf_bytes)
+    png_path.write_bytes(png_bytes)
+    manifest = {
+        "workflow_version": 3,
+        "stage": "preview",
+        "page_count": 1,
+        "facts_sha256": "a" * 64,
+        "view_sha256": "b" * 64,
+        "html_sha256": RUNNER.file_sha256(html_path),
+        "pdf_sha256": RUNNER.file_sha256(pdf_path),
+        "png_sha256": RUNNER.file_sha256(png_path),
+        "outputs": {
+            "html": html_path.name,
+            "pdf": pdf_path.name,
+            "png": png_path.name,
+        },
+    }
+    (directory / RUNNER.V3_PREVIEW_MANIFEST_NAME).write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return html_path, pdf_bytes, png_bytes
+
+
 def all_keys(value: object) -> set[str]:
     if isinstance(value, dict):
         return set(value).union(*(all_keys(child) for child in value.values()))
@@ -53,6 +90,27 @@ def all_keys(value: object) -> set[str]:
 
 
 class V3FactsTests(unittest.TestCase):
+    def test_v3_facts_reject_bilingual_language(self) -> None:
+        data = example()
+        data["club"]["language"] = "bilingual"
+
+        _, errors, _ = BUILDER.build_agenda(data, facts_only=True)
+
+        self.assertIn(
+            "V3 club.language must be zh or en; bilingual is supported only by V2",
+            errors,
+        )
+
+    def test_v2_facts_keep_bilingual_compatibility(self) -> None:
+        data = example()
+        data["club"]["language"] = "bilingual"
+
+        result, errors, _ = BUILDER.build_agenda(data, facts_only=False)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(result["club"]["language"], "bilingual")
+        self.assertIn("会议流程 / Agenda", BUILDER.render_html(result))
+
     def test_facts_ignore_v2_visual_input_and_row_limit(self) -> None:
         data = example()
         data["meeting"].update(
@@ -248,7 +306,211 @@ class V3RunnerTests(unittest.TestCase):
             )
             self.assertFalse((output_dir / "agenda.html").exists())
 
-    def test_preview_uses_renderer_and_exports_a_real_png_without_rebuilding(self) -> None:
+    def test_first_builds_facts_and_complete_preview_in_one_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            input_path.write_text(
+                json.dumps(example(), ensure_ascii=False), encoding="utf-8"
+            )
+            original_run_json_command = RUNNER.run_json_command
+            commands: list[list[str]] = []
+
+            def fake_export(command: list[str], **kwargs: object):
+                commands.append(command)
+                if Path(command[1]) != RUNNER.EXPORT_SCRIPT:
+                    return original_run_json_command(command, **kwargs)
+                staging_dir = Path(command[-1])
+                (staging_dir / "agenda.pdf").write_bytes(valid_pdf())
+                (staging_dir / "agenda.png").write_bytes(valid_png())
+                return 0, {"ok": True, "pages": 1}
+
+            args = argparse.Namespace(
+                input_json=input_path,
+                output_dir=output_dir,
+                club_profile=None,
+                update_club_profile=False,
+                profile_root=None,
+            )
+            stdout = io.StringIO()
+            with mock.patch.object(
+                RUNNER, "run_json_command", side_effect=fake_export
+            ), mock.patch.object(
+                RUNNER, "load_v3_renderer", return_value=RENDERER.render_agenda
+            ) as v3_loader, contextlib.redirect_stdout(stdout):
+                return_code = RUNNER.first(args)
+
+            self.assertEqual(return_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["stage"], "first_previewed")
+            self.assertEqual(payload["density"], "balanced")
+            self.assertFalse(payload["compact_retry"])
+            for name in (
+                "agenda.computed.json",
+                "agenda.md",
+                "agenda.diagnostics.json",
+                "agenda.manifest.json",
+                "agenda.view.json",
+                "agenda.preview.html",
+                "agenda.preview.pdf",
+                "agenda.preview.png",
+                RUNNER.V3_PREVIEW_MANIFEST_NAME,
+            ):
+                self.assertTrue((output_dir / name).is_file(), name)
+            v3_loader.assert_called_once_with()
+            build_command = next(
+                command for command in commands if Path(command[1]) == RUNNER.BUILD_SCRIPT
+            )
+            self.assertIn("--facts-only", build_command)
+            self.assertNotIn("--html-renderer", build_command)
+            self.assertEqual(
+                sum(Path(command[1]) == RUNNER.EXPORT_SCRIPT for command in commands),
+                1,
+            )
+
+    def test_first_stops_before_rendering_when_facts_are_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            data = example()
+            data["meeting"].pop("date")
+            input_path.write_text(
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            )
+            args = argparse.Namespace(
+                input_json=input_path,
+                output_dir=temp_dir / "output",
+                club_profile=None,
+                update_club_profile=False,
+                profile_root=None,
+            )
+            stderr = io.StringIO()
+
+            with mock.patch.object(RUNNER, "load_v3_renderer") as renderer_loader, \
+                contextlib.redirect_stderr(stderr):
+                return_code = RUNNER.first(args)
+
+            self.assertEqual(return_code, 2)
+            renderer_loader.assert_not_called()
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["stage"], "first_failed")
+            self.assertEqual(payload["failed_stage"], "facts")
+            self.assertFalse((temp_dir / "output" / "agenda.preview.png").exists())
+
+    def test_default_first_view_covers_components_pathways_and_one_special(self) -> None:
+        data = example()
+        data["participant_pathways"] = {"成员B": "PM L1"}
+        data["special_segments"] = [
+            {
+                "title": "AI 工作坊",
+                "owner": "成员K",
+                "minutes": 5,
+                "after": "prepared_speech:1",
+            }
+        ]
+        data["club"]["custom_support_blocks"] = [
+            {"id": "room_notes", "title": "现场提醒", "lines": ["记得签到"]},
+            {"id": "checklist", "title": "执行清单", "lines": ["检查麦克风"]},
+        ]
+        computed, errors, _ = BUILDER.build_agenda(data, facts_only=True)
+        self.assertEqual(errors, [])
+        next(
+            block
+            for block in computed["support_blocks"]
+            if block["id"] == "checklist"
+        )["group"] = "operations"
+
+        view = RUNNER.build_default_view(computed)
+
+        operations = view["component_flow"]["operations"]
+        background = view["component_flow"]["background"]
+        expected_ids = {"backstage"}.union(
+            block["id"] for block in computed["support_blocks"]
+        )
+        self.assertEqual(set(operations + background), expected_ids)
+        self.assertEqual(len(operations + background), len(expected_ids))
+        self.assertIn("backstage", operations)
+        self.assertIn("checklist", operations)
+        self.assertIn("room_notes", background)
+        self.assertEqual(
+            view["display_columns"],
+            ["time", "activity", "owner", "pathways", "duration"],
+        )
+        self.assertEqual(
+            view["content_emphasis"],
+            {"item_id": "special:1", "strength": "clear"},
+        )
+        self.assertEqual(view["density"], "balanced")
+        self.assertEqual(
+            view["design"], {"text_scale": "standard", "contrast": "clear"}
+        )
+        RENDERER.validate_view(computed, view)
+
+    def test_first_retries_compact_only_after_single_page_overflow(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            input_path.write_text(
+                json.dumps(example(), ensure_ascii=False), encoding="utf-8"
+            )
+            original_run_json_command = RUNNER.run_json_command
+            export_attempts = 0
+            rendered_densities: list[str] = []
+
+            def fake_commands(command: list[str], **kwargs: object):
+                nonlocal export_attempts
+                if Path(command[1]) != RUNNER.EXPORT_SCRIPT:
+                    return original_run_json_command(command, **kwargs)
+                export_attempts += 1
+                if export_attempts == 1:
+                    return 2, {
+                        "ok": False,
+                        "errors": [
+                            "final agenda content does not fit on one A4 page: "
+                            "PDF contains 2 pages. Reduce agenda rows or fixed-information "
+                            "components before exporting"
+                        ],
+                    }
+                staging_dir = Path(command[-1])
+                (staging_dir / "agenda.pdf").write_bytes(valid_pdf())
+                (staging_dir / "agenda.png").write_bytes(valid_png())
+                return 0, {"ok": True, "pages": 1}
+
+            def fake_renderer(
+                _computed: dict, view: dict, **_kwargs: object
+            ) -> str:
+                rendered_densities.append(view["density"])
+                return "<html><body>preview</body></html>"
+
+            args = argparse.Namespace(
+                input_json=input_path,
+                output_dir=output_dir,
+                club_profile=None,
+                update_club_profile=False,
+                profile_root=None,
+            )
+            stdout = io.StringIO()
+            with mock.patch.object(
+                RUNNER, "run_json_command", side_effect=fake_commands
+            ), mock.patch.object(
+                RUNNER, "load_v3_renderer", return_value=fake_renderer
+            ), contextlib.redirect_stdout(stdout):
+                return_code = RUNNER.first(args)
+
+            self.assertEqual(return_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertTrue(payload["compact_retry"])
+            self.assertEqual(payload["density"], "compact")
+            self.assertEqual(rendered_densities, ["balanced", "compact"])
+            view = json.loads(
+                (output_dir / "agenda.view.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(view["density"], "compact")
+            self.assertEqual(view["design"]["text_scale"], "standard")
+
+    def test_preview_atomically_saves_the_complete_approved_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temp_text:
             temp_dir = Path(temp_text)
             computed_path = temp_dir / "agenda.computed.json"
@@ -261,6 +523,7 @@ class V3RunnerTests(unittest.TestCase):
                 self.assertEqual(Path(command[1]), RUNNER.EXPORT_SCRIPT)
                 self.assertNotIn(str(RUNNER.BUILD_SCRIPT), command)
                 staging_dir = Path(command[-1])
+                (staging_dir / "agenda.pdf").write_bytes(valid_pdf())
                 (staging_dir / "agenda.png").write_bytes(valid_png())
                 return 0, {"ok": True, "pages": 1}
 
@@ -283,28 +546,38 @@ class V3RunnerTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(payload["stage"], "previewed")
             self.assertTrue((output_dir / "agenda.preview.html").is_file())
+            self.assertTrue((output_dir / "agenda.preview.pdf").is_file())
             self.assertTrue((output_dir / "agenda.preview.png").is_file())
+            self.assertTrue(
+                (output_dir / RUNNER.V3_PREVIEW_MANIFEST_NAME).is_file()
+            )
             self.assertGreater((output_dir / "agenda.preview.png").stat().st_size, 1000)
             self.assertFalse((output_dir / "agenda.pdf").exists())
+            manifest = json.loads(
+                (output_dir / RUNNER.V3_PREVIEW_MANIFEST_NAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(manifest["page_count"], 1)
+            for artifact in ("html", "pdf", "png"):
+                path = output_dir / manifest["outputs"][artifact]
+                self.assertEqual(
+                    manifest[f"{artifact}_sha256"], RUNNER.file_sha256(path)
+                )
+            self.assertEqual(manifest["facts_sha256"], RUNNER.file_sha256(computed_path))
+            self.assertEqual(manifest["view_sha256"], RUNNER.file_sha256(view_path))
 
-    def test_final_exports_only_from_approved_html(self) -> None:
+    def test_final_promotes_approved_bytes_without_calling_exporter(self) -> None:
         with tempfile.TemporaryDirectory() as temp_text:
             temp_dir = Path(temp_text)
-            html_path = temp_dir / "agenda.preview.html"
+            preview_dir = temp_dir / "preview"
             output_dir = temp_dir / "output"
-            html_path.write_text(
-                '<html><head><meta name="agenda-workflow" content="v3-preview">'
-                "</head><body>approved</body></html>",
-                encoding="utf-8",
-            )
-
-            def fake_export(command: list[str], **_kwargs: object):
-                self.assertEqual(Path(command[1]), RUNNER.EXPORT_SCRIPT)
-                self.assertNotIn(str(RUNNER.BUILD_SCRIPT), command)
-                staging_dir = Path(command[-1])
-                (staging_dir / "agenda.pdf").write_bytes(valid_pdf())
-                (staging_dir / "agenda.png").write_bytes(valid_png())
-                return 0, {"ok": True, "pages": 1}
+            html_path, preview_pdf, preview_png = write_preview_bundle(preview_dir)
+            output_dir.mkdir()
+            old_pdf = valid_pdf() + b"previous"
+            old_png = valid_png() + b"previous"
+            (output_dir / "agenda.pdf").write_bytes(old_pdf)
+            (output_dir / "agenda.png").write_bytes(old_png)
 
             args = argparse.Namespace(
                 input_html=html_path,
@@ -312,17 +585,59 @@ class V3RunnerTests(unittest.TestCase):
                 v3_final=True,
             )
             stdout = io.StringIO()
-            with mock.patch.object(
-                RUNNER, "run_json_command", side_effect=fake_export
-            ), contextlib.redirect_stdout(stdout):
+            with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                contextlib.redirect_stdout(stdout):
                 return_code = RUNNER.finalize(args)
 
             self.assertEqual(return_code, 0)
+            exporter.assert_not_called()
             payload = json.loads(stdout.getvalue())
             self.assertEqual(payload["stage"], "finalized")
             self.assertNotIn("deprecated", payload)
-            self.assertTrue((output_dir / "agenda.pdf").is_file())
-            self.assertTrue((output_dir / "agenda.png").is_file())
+            self.assertEqual((output_dir / "agenda.pdf").read_bytes(), preview_pdf)
+            self.assertEqual((output_dir / "agenda.png").read_bytes(), preview_png)
+            self.assertEqual(
+                (output_dir / "agenda.previous.pdf").read_bytes(), old_pdf
+            )
+            self.assertEqual(
+                (output_dir / "agenda.previous.png").read_bytes(), old_png
+            )
+
+    def test_final_rejects_any_tampered_preview_artifact_and_keeps_last_good(self) -> None:
+        for artifact in ("html", "pdf", "png"):
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as temp_text:
+                temp_dir = Path(temp_text)
+                preview_dir = temp_dir / "preview"
+                output_dir = temp_dir / "output"
+                html_path, _, _ = write_preview_bundle(preview_dir)
+                output_dir.mkdir()
+                old_pdf = valid_pdf() + b"old"
+                old_png = valid_png() + b"old"
+                (output_dir / "agenda.pdf").write_bytes(old_pdf)
+                (output_dir / "agenda.png").write_bytes(old_png)
+                target = preview_dir / f"agenda.preview.{artifact}"
+                target.write_bytes(target.read_bytes() + b"tampered")
+
+                args = argparse.Namespace(
+                    input_html=html_path,
+                    output_dir=output_dir,
+                    v3_final=True,
+                )
+                stderr = io.StringIO()
+                with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                    contextlib.redirect_stderr(stderr):
+                    return_code = RUNNER.finalize(args)
+
+                self.assertEqual(return_code, 2)
+                exporter.assert_not_called()
+                self.assertEqual((output_dir / "agenda.pdf").read_bytes(), old_pdf)
+                self.assertEqual((output_dir / "agenda.png").read_bytes(), old_png)
+                payload = json.loads(stderr.getvalue())
+                self.assertEqual(payload["stage"], "finalize_failed")
+                self.assertTrue(payload["last_good_preserved"])
+                self.assertTrue(
+                    any(artifact.upper() in error for error in payload["errors"])
+                )
 
     def test_final_rejects_unmarked_html_and_preserves_previous_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_text:

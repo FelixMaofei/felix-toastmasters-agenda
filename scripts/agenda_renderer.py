@@ -968,9 +968,9 @@ def render_agenda(
         computed.get("computed", {}), "agenda.computed.computed"
     )
     language = str(club.get("language", "zh")).strip() or "zh"
-    if language not in {"zh", "en", "bilingual"}:
+    if language not in {"zh", "en"}:
         raise AgendaRenderError(
-            "agenda.computed.club.language must be zh, en, or bilingual"
+            "V3 agenda.computed.club.language must be zh or en"
         )
 
     edition, agenda_label = _meeting_title_parts(meeting, language)
@@ -995,15 +995,15 @@ def render_agenda(
         (
             _localize("日期", "Date", language),
             _display_value(meeting.get("date", "")),
-            "",
+            "date",
         ),
-        (_localize("时间", "Time", language), time_range, ""),
+        (_localize("时间", "Time", language), time_range, "time"),
         (
             _localize("地点", "Location", language),
             _display_value(
                 meeting.get("location", club.get("default_location", ""))
             ),
-            "",
+            "location",
         ),
         (
             _localize("今日一词", "Word of the Day", language),
@@ -1013,9 +1013,10 @@ def render_agenda(
         (
             _localize("会议经理", "Meeting Manager", language),
             _display_value(meeting.get("manager", "")),
-            "",
+            "manager",
         ),
     ]
+    meta = [item for item in meta if _nonempty_text(item[1])]
     meta_html = "".join(
         f'<div class="meta-item{" " + css_class if css_class else ""}">'
         f'<span class="meta-label">{_e(label)}</span>'
@@ -1051,7 +1052,7 @@ def render_agenda(
       </div>
     </header>
 
-    <section class="meta-strip" aria-label="{_e(_localize('会议信息', 'Meeting information', language))}">
+    <section class="meta-strip" data-meta-count="{len(meta)}" aria-label="{_e(_localize('会议信息', 'Meeting information', language))}">
       {meta_html}
     </section>
 

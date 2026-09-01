@@ -23,6 +23,23 @@ def example() -> dict:
 
 
 class AgendaBuilderTests(unittest.TestCase):
+    def test_v3_omits_inherited_officers_when_current_president_differs(self) -> None:
+        data = example()
+        data["meeting"]["president"] = "Current President"
+        next(
+            officer
+            for officer in data["club"]["officers"]
+            if officer["role"] == "President"
+        )["name"] = "Stored President"
+
+        result, errors, _ = BUILDER.build_agenda(data, facts_only=True)
+
+        self.assertEqual(errors, [])
+        self.assertNotIn(
+            "officers",
+            [block["id"] for block in result["support_blocks"]],
+        )
+
     def test_standard_example_closes_exactly(self) -> None:
         result, errors, warnings = BUILDER.build_agenda(example())
         self.assertEqual(errors, [])

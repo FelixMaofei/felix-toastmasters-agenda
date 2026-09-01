@@ -796,6 +796,17 @@ def parse_officers(value: Any, errors: list[str]) -> list[dict[str, str]]:
     return result
 
 
+def profile_president_name(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        if normalize_officer_key(row.get("role")) == "president":
+            return "" if row.get("name") is None else str(row.get("name")).strip()
+    return ""
+
+
 def parse_support_components(value: Any, errors: list[str]) -> list[str]:
     if not isinstance(value, list):
         errors.append(
@@ -1940,6 +1951,10 @@ def build_agenda(
     if language not in LANGUAGES:
         errors.append("club.language must be zh, en, or bilingual")
         language = "zh"
+    elif facts_only and language == "bilingual":
+        errors.append(
+            "V3 club.language must be zh or en; bilingual is supported only by V2"
+        )
     meeting = normalized.get("meeting")
     if not isinstance(meeting, dict):
         errors.append("meeting must be an object")
@@ -1960,6 +1975,22 @@ def build_agenda(
         meeting.get("support_components", club.get("support_components")),
         errors,
     )
+    if (
+        facts_only
+        and "support_components" not in meeting
+        and "officers" in support_components
+        and not is_unresolved(meeting.get("president"))
+    ):
+        current_president = normalized_club_name(meeting.get("president"))
+        stored_president = normalized_club_name(
+            profile_president_name(club.get("officers"))
+        )
+        if stored_president and current_president != stored_president:
+            support_components = [
+                component
+                for component in support_components
+                if component != "officers"
+            ]
     custom_support_blocks = parse_custom_support_blocks(
         meeting.get(
             "custom_support_blocks",

@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -25,6 +27,8 @@ V3_PREVIEW_META_RE = re.compile(
     r"<meta\s+(?=[^>]*\bname\s*=\s*['\"]agenda-workflow['\"])(?=[^>]*\bcontent\s*=\s*['\"]v3-preview['\"])[^>]*>",
     re.IGNORECASE,
 )
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+V3_PREVIEW_MANIFEST_NAME = "agenda.preview.manifest.json"
 
 
 def emit(payload: dict[str, Any], *, error: bool = False) -> None:
@@ -134,6 +138,80 @@ def has_complete_agenda_pair(directory: Path) -> bool:
     )
 
 
+def is_sha256(value: object) -> bool:
+    return isinstance(value, str) and SHA256_RE.fullmatch(value) is not None
+
+
+def validate_v3_preview_bundle(
+    html_path: Path,
+) -> tuple[list[str], Path, Path, Path]:
+    """Validate the exact preview artifacts approved by the user."""
+
+    preview_dir = html_path.parent
+    manifest_path = preview_dir / V3_PREVIEW_MANIFEST_NAME
+    pdf_path = preview_dir / "agenda.preview.pdf"
+    png_path = preview_dir / "agenda.preview.png"
+    errors: list[str] = []
+
+    if not has_v3_preview_marker(html_path):
+        errors.append(
+            "final requires HTML created by the V3 preview stage; "
+            "agenda-workflow=v3-preview marker is missing"
+        )
+
+    try:
+        manifest = load_json_object(manifest_path, "V3 preview manifest")
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors, manifest_path, pdf_path, png_path
+
+    if manifest.get("workflow_version") != 3 or manifest.get("stage") != "preview":
+        errors.append("V3 preview manifest has the wrong workflow version or stage")
+    if manifest.get("page_count") != 1:
+        errors.append("V3 preview manifest must record exactly one A4 page")
+
+    expected_outputs = {
+        "html": html_path.name,
+        "pdf": pdf_path.name,
+        "png": png_path.name,
+    }
+    if manifest.get("outputs") != expected_outputs:
+        errors.append("V3 preview manifest does not describe this preview file set")
+
+    for key in ("facts_sha256", "view_sha256"):
+        if not is_sha256(manifest.get(key)):
+            errors.append(f"V3 preview manifest is missing a valid {key}")
+
+    artifacts = (
+        ("HTML", html_path, None, "html_sha256"),
+        ("PDF", pdf_path, b"%PDF-", "pdf_sha256"),
+        ("PNG", png_path, b"\x89PNG\r\n\x1a\n", "png_sha256"),
+    )
+    for label, path, signature, hash_key in artifacts:
+        expected_hash = manifest.get(hash_key)
+        if not is_sha256(expected_hash):
+            errors.append(f"V3 preview manifest is missing a valid {hash_key}")
+            continue
+        if signature is None:
+            if not path.is_file():
+                errors.append(f"V3 preview {label} is missing: {path}")
+                continue
+        elif not is_valid_agenda_file(path, signature):
+            errors.append(f"V3 preview {label} is missing or invalid: {path}")
+            continue
+        try:
+            actual_hash = file_sha256(path)
+        except OSError as exc:
+            errors.append(f"V3 preview {label} could not be read: {exc}")
+            continue
+        if actual_hash != expected_hash:
+            errors.append(
+                f"V3 preview {label} no longer matches the approved preview manifest"
+            )
+
+    return errors, manifest_path, pdf_path, png_path
+
+
 def copy_pairs_atomically(pairs: list[tuple[Path, Path]]) -> None:
     """Copy a small related file set with rollback if any final replace fails."""
     temporary: list[tuple[Path, Path]] = []
@@ -233,6 +311,108 @@ def append_profile_options(command: list[str], args: argparse.Namespace) -> None
         command.extend(
             ["--profile-root", str(args.profile_root.expanduser().resolve())]
         )
+
+
+def capture_stage(
+    handler: Any,
+    args: argparse.Namespace,
+) -> tuple[int, dict[str, Any]]:
+    """Run one CLI stage internally while keeping the outer command single-response."""
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        return_code = handler(args)
+    raw = stdout.getvalue().strip() or stderr.getvalue().strip()
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        payload = {
+            "ok": False,
+            "errors": ["agenda stage returned non-JSON output", raw[-2000:]],
+        }
+    if not isinstance(payload, dict):
+        payload = {
+            "ok": False,
+            "errors": ["agenda stage returned JSON that is not an object"],
+        }
+    return return_code, payload
+
+
+def build_default_view(computed: dict[str, Any]) -> dict[str, Any]:
+    """Derive the restrained V3 view used for a first visual result.
+
+    This makes no meeting-type choice. It only exposes real data, covers every
+    materialized component once, and highlights one unambiguous special item.
+    """
+
+    raw_timeline = computed.get("timeline")
+    timeline = raw_timeline if isinstance(raw_timeline, list) else []
+    display_columns = ["time", "activity", "owner", "duration"]
+    if any(
+        isinstance(item, dict)
+        and isinstance(item.get("pathways"), str)
+        and bool(item["pathways"].strip())
+        for item in timeline
+    ):
+        display_columns.insert(-1, "pathways")
+
+    special_ids = [
+        str(item.get("id")).strip()
+        for item in timeline
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and str(item.get("id")).strip().startswith("special:")
+    ]
+    emphasis = (
+        {"item_id": special_ids[0], "strength": "clear"}
+        if len(special_ids) == 1
+        else None
+    )
+
+    operations: list[str] = []
+    background: list[str] = []
+    seen: set[str] = set()
+    if isinstance(computed.get("backstage"), list) and computed["backstage"]:
+        operations.append("backstage")
+        seen.add("backstage")
+
+    raw_blocks = computed.get("support_blocks")
+    if isinstance(raw_blocks, list):
+        for block in raw_blocks:
+            if not isinstance(block, dict):
+                continue
+            component_id = block.get("id")
+            if not isinstance(component_id, str) or not component_id.strip():
+                continue
+            component_id = component_id.strip()
+            if component_id in seen:
+                continue
+            target = operations if block.get("group") == "operations" else background
+            target.append(component_id)
+            seen.add(component_id)
+
+    return {
+        "view_version": 1,
+        "content_emphasis": emphasis,
+        "display_columns": display_columns,
+        "component_flow": {
+            "operations": operations,
+            "background": background,
+        },
+        "density": "balanced",
+        "design": {"text_scale": "standard", "contrast": "clear"},
+    }
+
+
+def is_only_single_page_overflow(payload: dict[str, Any]) -> bool:
+    errors = payload.get("errors")
+    return (
+        isinstance(errors, list)
+        and len(errors) == 1
+        and isinstance(errors[0], str)
+        and "does not fit on one A4 page" in errors[0]
+    )
 
 
 def draft(args: argparse.Namespace) -> int:
@@ -339,7 +519,7 @@ def draft(args: argparse.Namespace) -> int:
 
 
 def preview(args: argparse.Namespace) -> int:
-    """V3 stage 2: render confirmed facts and a constrained view to a real PNG."""
+    """V3 stage 2: render confirmed facts to the complete approvable file set."""
 
     computed_path = args.input_computed.expanduser().resolve()
     view_path = args.view.expanduser().resolve()
@@ -348,6 +528,8 @@ def preview(args: argparse.Namespace) -> int:
     try:
         computed = load_json_object(computed_path, "computed agenda")
         view = load_json_object(view_path, "agenda view")
+        facts_sha256 = file_sha256(computed_path)
+        view_sha256 = file_sha256(view_path)
         render_agenda = load_v3_renderer()
         rendered_html = render_agenda(
             computed,
@@ -392,15 +574,20 @@ def preview(args: argparse.Namespace) -> int:
         except (OSError, subprocess.SubprocessError) as exc:
             export_code = 2
             export_payload = {"ok": False, "errors": [str(exc)]}
+        staged_pdf = staging_dir / "agenda.pdf"
         staged_png = staging_dir / "agenda.png"
         if (
             export_code != 0
             or export_payload.get("ok") is not True
+            or export_payload.get("pages") != 1
+            or not is_valid_agenda_file(staged_pdf, b"%PDF-")
             or not is_valid_agenda_file(staged_png, b"\x89PNG\r\n\x1a\n")
         ):
             errors = export_payload.get("errors")
             if not isinstance(errors, list) or not errors:
-                errors = ["visual preview export did not produce a valid PNG"]
+                errors = [
+                    "visual preview export did not produce one valid A4 PDF and PNG pair"
+                ]
             emit(
                 {
                     **export_payload,
@@ -417,10 +604,37 @@ def preview(args: argparse.Namespace) -> int:
             )
             return 2
         preview_html = output_dir / "agenda.preview.html"
+        preview_pdf = output_dir / "agenda.preview.pdf"
         preview_png = output_dir / "agenda.preview.png"
+        preview_manifest = output_dir / V3_PREVIEW_MANIFEST_NAME
+        staged_manifest = staging_dir / V3_PREVIEW_MANIFEST_NAME
+        manifest = {
+            "workflow_version": 3,
+            "stage": "preview",
+            "page_count": 1,
+            "facts_sha256": facts_sha256,
+            "view_sha256": view_sha256,
+            "html_sha256": file_sha256(staged_html),
+            "pdf_sha256": file_sha256(staged_pdf),
+            "png_sha256": file_sha256(staged_png),
+            "outputs": {
+                "html": preview_html.name,
+                "pdf": preview_pdf.name,
+                "png": preview_png.name,
+            },
+        }
+        staged_manifest.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         try:
             copy_pairs_atomically(
-                [(staged_html, preview_html), (staged_png, preview_png)]
+                [
+                    (staged_html, preview_html),
+                    (staged_pdf, preview_pdf),
+                    (staged_png, preview_png),
+                    (staged_manifest, preview_manifest),
+                ]
             )
         except OSError as exc:
             emit(
@@ -439,13 +653,167 @@ def preview(args: argparse.Namespace) -> int:
             "stage": "previewed",
             "outputs": {
                 "html": str(preview_html),
+                "pdf": str(preview_pdf),
                 "png": str(preview_png),
+                "manifest": str(preview_manifest),
             },
-            "facts_sha256": file_sha256(computed_path),
-            "view_sha256": file_sha256(view_path),
+            "facts_sha256": facts_sha256,
+            "view_sha256": view_sha256,
             "next_action": (
-                "Show agenda.preview.png for visual confirmation. Export final files only "
-                "after the user confirms the style."
+                "Show agenda.preview.png for visual confirmation. After approval, promote "
+                "the already-rendered PDF and PNG immediately; do not render them again."
+            ),
+        }
+    )
+    return 0
+
+
+def first(args: argparse.Namespace) -> int:
+    """V3 fast path: confirmed meeting JSON to the first real A4 preview."""
+
+    output_dir = args.output_dir.expanduser().resolve()
+    draft_args = argparse.Namespace(
+        input_json=args.input_json,
+        output_dir=output_dir,
+        club_profile=args.club_profile,
+        update_club_profile=args.update_club_profile,
+        profile_root=args.profile_root,
+    )
+    draft_code, draft_payload = capture_stage(draft, draft_args)
+    if draft_code != 0 or draft_payload.get("ok") is not True:
+        emit(
+            {
+                **draft_payload,
+                "ok": False,
+                "stage": "first_failed",
+                "failed_stage": "facts",
+                "next_action": (
+                    "Ask only for the missing or conflicting facts listed in errors. "
+                    "After the user answers, update meeting.json and run first again."
+                ),
+            },
+            error=True,
+        )
+        return 2
+
+    draft_outputs = draft_payload.get("outputs")
+    if not isinstance(draft_outputs, dict):
+        emit(
+            {
+                "ok": False,
+                "stage": "first_failed",
+                "failed_stage": "facts",
+                "errors": ["agenda draft returned no output manifest"],
+            },
+            error=True,
+        )
+        return 2
+    try:
+        computed_path = Path(str(draft_outputs["computed_json"])).resolve()
+        computed = load_json_object(computed_path, "computed agenda")
+        view = build_default_view(computed)
+        view_path = output_dir / "agenda.view.json"
+        view_path.write_text(
+            json.dumps(view, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except (KeyError, OSError, ValueError) as exc:
+        emit(
+            {
+                "ok": False,
+                "stage": "first_failed",
+                "failed_stage": "view",
+                "errors": [str(exc)],
+                "next_action": "Keep the computed facts and fix only the visual intent.",
+            },
+            error=True,
+        )
+        return 2
+
+    preview_args = argparse.Namespace(
+        input_computed=computed_path,
+        view=view_path,
+        output_dir=output_dir,
+    )
+    preview_code, preview_payload = capture_stage(preview, preview_args)
+    compact_retry = False
+    if (
+        (preview_code != 0 or preview_payload.get("ok") is not True)
+        and is_only_single_page_overflow(preview_payload)
+    ):
+        compact_retry = True
+        view["density"] = "compact"
+        try:
+            view_path.write_text(
+                json.dumps(view, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            emit(
+                {
+                    "ok": False,
+                    "stage": "first_failed",
+                    "failed_stage": "view",
+                    "errors": [str(exc)],
+                },
+                error=True,
+            )
+            return 2
+        preview_code, preview_payload = capture_stage(preview, preview_args)
+
+    if preview_code != 0 or preview_payload.get("ok") is not True:
+        emit(
+            {
+                **preview_payload,
+                "ok": False,
+                "stage": "first_failed",
+                "failed_stage": "preview",
+                "compact_retry": compact_retry,
+                "next_action": (
+                    "Keep agenda.md and the previous usable preview. Fix only the visual "
+                    "layer; do not hide content or reduce the text scale."
+                ),
+            },
+            error=True,
+        )
+        return 2
+
+    preview_outputs = preview_payload.get("outputs")
+    if not isinstance(preview_outputs, dict):
+        preview_outputs = {}
+    outputs = {
+        "computed_json": str(computed_path),
+        "markdown": str(draft_outputs.get("markdown", output_dir / "agenda.md")),
+        "diagnostics": str(
+            draft_outputs.get("diagnostics", output_dir / "agenda.diagnostics.json")
+        ),
+        "draft_manifest": str(
+            draft_outputs.get("manifest", output_dir / "agenda.manifest.json")
+        ),
+        "view": str(view_path),
+        "html": str(preview_outputs.get("html", output_dir / "agenda.preview.html")),
+        "pdf": str(preview_outputs.get("pdf", output_dir / "agenda.preview.pdf")),
+        "png": str(preview_outputs.get("png", output_dir / "agenda.preview.png")),
+        "preview_manifest": str(
+            preview_outputs.get(
+                "manifest", output_dir / V3_PREVIEW_MANIFEST_NAME
+            )
+        ),
+    }
+    if draft_outputs.get("club_profile"):
+        outputs["club_profile"] = str(draft_outputs["club_profile"])
+    emit(
+        {
+            "ok": True,
+            "stage": "first_previewed",
+            "outputs": outputs,
+            "density": view["density"],
+            "compact_retry": compact_retry,
+            "facts_sha256": preview_payload.get("facts_sha256"),
+            "view_sha256": preview_payload.get("view_sha256"),
+            "next_action": (
+                "Show agenda.preview.png now. The user may request one plain-language "
+                "change or approve it for immediate delivery."
             ),
         }
     )
@@ -505,8 +873,87 @@ def prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def finalize_v3_preview(args: argparse.Namespace) -> int:
+    """Promote the exact PDF and PNG already approved during V3 preview."""
+
+    html_path = args.input_html.expanduser().resolve()
+    output_dir = args.output_dir.expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    current_pdf = output_dir / "agenda.pdf"
+    current_png = output_dir / "agenda.png"
+    has_last_good = has_complete_agenda_pair(output_dir)
+    last_good_paths = (
+        [str(current_pdf), str(current_png)] if has_last_good else []
+    )
+
+    errors, manifest_path, preview_pdf, preview_png = validate_v3_preview_bundle(
+        html_path
+    )
+    if errors:
+        return emit_finalize_failure(
+            {
+                "errors": errors,
+                "preview_manifest": str(manifest_path),
+            },
+            export_exit_code=2,
+            last_good_paths=last_good_paths,
+        )
+
+    previous_pdf = output_dir / "agenda.previous.pdf"
+    previous_png = output_dir / "agenda.previous.png"
+    previous_version_paths: list[str] = []
+    try:
+        commit_pairs: list[tuple[Path, Path]] = []
+        if has_last_good:
+            commit_pairs.extend(
+                [
+                    (current_pdf, previous_pdf),
+                    (current_png, previous_png),
+                ]
+            )
+        commit_pairs.extend(
+            [
+                (preview_pdf, current_pdf),
+                (preview_png, current_png),
+            ]
+        )
+        copy_pairs_atomically(commit_pairs)
+        if has_last_good:
+            previous_version_paths = [str(previous_pdf), str(previous_png)]
+    except OSError as exc:
+        return emit_finalize_failure(
+            {"errors": [f"agenda files could not be committed: {exc}"]},
+            export_exit_code=2,
+            last_good_paths=last_good_paths,
+        )
+
+    for stale_page in output_dir.glob("agenda-page-*.png"):
+        if stale_page.is_file():
+            try:
+                stale_page.unlink()
+            except OSError:
+                pass
+    emit(
+        {
+            "ok": True,
+            "pages": 1,
+            "pdf": str(current_pdf),
+            "png": str(current_png),
+            "pngs": [str(current_png)],
+            "stage": "finalized",
+            "preview_manifest": str(manifest_path),
+            "previous_version_paths": previous_version_paths,
+            "next_action": "Deliver the verified PDF and PNG. Do not redesign after approval.",
+        }
+    )
+    return 0
+
+
 def finalize(args: argparse.Namespace) -> int:
     v3_final = bool(getattr(args, "v3_final", False))
+    if v3_final:
+        return finalize_v3_preview(args)
+
     html_path = args.input_html.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -519,17 +966,6 @@ def finalize(args: argparse.Namespace) -> int:
     last_good_paths = (
         [str(current_pdf), str(current_png)] if has_last_good else []
     )
-    if v3_final and not has_v3_preview_marker(html_path):
-        return emit_finalize_failure(
-            {
-                "errors": [
-                    "final requires HTML created by the V3 preview stage; "
-                    "agenda-workflow=v3-preview marker is missing"
-                ]
-            },
-            export_exit_code=2,
-            last_good_paths=last_good_paths,
-        )
     previous_pdf = output_dir / "agenda.previous.pdf"
     previous_png = output_dir / "agenda.previous.png"
     previous_version_paths: list[str] = []
@@ -653,6 +1089,18 @@ def main() -> None:
     doctor_parser = subparsers.add_parser("doctor", help="check local runtime")
     doctor_parser.set_defaults(handler=doctor)
 
+    first_parser = subparsers.add_parser(
+        "first", help="V3: build facts and immediately create the first A4 preview"
+    )
+    first_parser.add_argument("input_json", type=Path)
+    first_parser.add_argument("--output-dir", type=Path, default=Path("output"))
+    first_parser.add_argument("--club-profile", type=str, default=None)
+    first_parser.add_argument("--update-club-profile", action="store_true")
+    first_parser.add_argument(
+        "--profile-root", type=Path, default=None, help=argparse.SUPPRESS
+    )
+    first_parser.set_defaults(handler=first)
+
     draft_parser = subparsers.add_parser(
         "draft", help="V3: compute facts and Markdown without generating HTML"
     )
@@ -666,7 +1114,7 @@ def main() -> None:
     draft_parser.set_defaults(handler=draft)
 
     preview_parser = subparsers.add_parser(
-        "preview", help="V3: render confirmed facts and a visual intent to HTML plus PNG"
+        "preview", help="V3: render confirmed facts to approvable HTML, PDF and PNG"
     )
     preview_parser.add_argument("input_computed", type=Path)
     preview_parser.add_argument("--view", type=Path, required=True)
@@ -674,7 +1122,7 @@ def main() -> None:
     preview_parser.set_defaults(handler=preview)
 
     final_parser = subparsers.add_parser(
-        "final", help="V3: export an approved preview HTML to PDF plus PNG"
+        "final", help="V3: instantly promote an approved preview PDF and PNG"
     )
     final_parser.add_argument("input_html", type=Path)
     final_parser.add_argument("--output-dir", type=Path, default=Path("output"))
