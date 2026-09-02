@@ -1,4 +1,4 @@
-# Felix Toastmasters Agenda V4
+# Felix Toastmasters Agenda V4.1
 
 把 Toastmasters 角色接龙和本期变化，直接做成内容准确、时间闭合的一页 A4 会单。
 
@@ -23,9 +23,9 @@
 
 最后一种会原样交付你已经看到的 PDF 和 PNG，不重新排版。
 
-## 安装 V4
+## 安装 V4.1
 
-推荐从 [V4 Release](https://github.com/FelixMaofei/felix-toastmasters-agenda/releases/tag/v4.0.0) 下载 `felix-toastmasters-agenda-local.zip`，解压到 Skills 目录。这个 ZIP 只有运行所需的 Skill、程序、官方 Logo 和离线字体；不包含测试、架构说明和历史资料。
+推荐从 [V4.1 Release](https://github.com/FelixMaofei/felix-toastmasters-agenda/releases/tag/v4.1.0) 下载 `felix-toastmasters-agenda-local.zip`，解压到 Skills 目录。这个 ZIP 只有运行所需的 Skill、程序、官方 Logo 和离线字体；不包含测试、架构说明和历史资料。
 
 不会安装时，把 Release 链接发给你的 AI，并说：
 
@@ -47,7 +47,7 @@ unzip ~/Downloads/felix-toastmasters-agenda-local.zip -d ~/.workbuddy/skills
 
 第一次使用某个俱乐部时，Skill 可以根据已确认资料建立本机 profile，保存俱乐部名称、语言、固定信息和授权素材。以后每期只提供角色与变化即可。
 
-本期明确事实永远优先于 profile：例如本期地点、特殊工作坊、临时时长和负责人会覆盖旧资料，但不会自动改成以后默认。俱乐部资料和自有 Logo 都保存在本机，不需要联网；只有 Toastmasters 官方 Logo 随 V4 运行包提供。
+本期明确事实永远优先于 profile：例如本期地点、特殊工作坊、临时时长和负责人会覆盖旧资料，但不会自动改成以后默认。俱乐部资料和自有 Logo 都保存在本机，不需要联网；只有 Toastmasters 官方 Logo 随 V4.1 运行包提供。
 
 ## 维护与验证
 
@@ -58,4 +58,4 @@ python3 -m unittest discover -s tests
 python3 scripts/package_local.py --output-dir ../agenda-package-build --force
 ```
 
-V4 的 `first` 一次生成预览 PNG/PDF；`final` 只交付已预览的同一版文件。
+V4.1 的 `first` 一次生成预览 PNG/PDF；`final` 只交付已预览的同一版文件。

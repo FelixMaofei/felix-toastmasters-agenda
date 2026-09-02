@@ -19,6 +19,10 @@ description: 将 Toastmasters 角色接龙、会议说明或旧会单参考，�
 
 主题、Pathways、俱乐部介绍、入会信息、官员名单和二维码属于可选内容，不阻断初版。必要信息已经齐全时，不等待可选内容，直接生成图片。
 
+角色材料没有“真情分享”时，可以与其他必要问题一起只确认一次：`本期有真情分享吗？有：负责人姓名；没有：取消。` 用户确认没有后，在本期输入加入 `{"agenda_overrides":[{"id":"sharing","enabled":false}]}`，此后不再追问。
+
+用户说“没有其他内容”“不需要可选内容”或“纯会单”时，代表本期不继承 profile 的介绍、官员、规则、二维码或自定义信息块。内部输入必须同时写入 `meeting.support_components: []` 和 `meeting.custom_support_blocks: []`，不再逐项追问。
+
 推荐提问格式：
 
 > 我已识别：……
@@ -92,6 +96,8 @@ python3 "$SKILL_DIR/scripts/run_agenda.py" first meeting.json \
 ```json
 {"agenda_overrides": [{"id": "general_evaluation", "minutes": 10}]}
 ```
+
+用户确认本期没有真情分享时，使用 `{"agenda_overrides":[{"id":"sharing","enabled":false}]}`。这个确认保存在同一份本期 JSON 中，后续内容或视觉修改不得再次追问。
 
 纯视觉变化使用最小 `view.patch.json`，例如 `{"design":{"text_scale":"large"}}`，并在 `first` 后增加 `--view-patch view.patch.json`。每次修改都由程序重新检查时间和版面，并展示新的 `agenda.preview.png`。
 

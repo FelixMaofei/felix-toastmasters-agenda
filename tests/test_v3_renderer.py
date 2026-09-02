@@ -16,6 +16,20 @@ assert SPEC and SPEC.loader
 RENDERER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RENDERER)
 
+RUNNER_SPEC = importlib.util.spec_from_file_location(
+    "agenda_runner_for_renderer_tests", ROOT / "scripts" / "run_agenda.py"
+)
+assert RUNNER_SPEC and RUNNER_SPEC.loader
+RUNNER = importlib.util.module_from_spec(RUNNER_SPEC)
+RUNNER_SPEC.loader.exec_module(RUNNER)
+
+EXPORTER_SPEC = importlib.util.spec_from_file_location(
+    "agenda_exporter_for_renderer_tests", ROOT / "scripts" / "export_a4.py"
+)
+assert EXPORTER_SPEC and EXPORTER_SPEC.loader
+EXPORTER = importlib.util.module_from_spec(EXPORTER_SPEC)
+EXPORTER_SPEC.loader.exec_module(EXPORTER)
+
 
 def support_blocks(include_club_intro: bool = False) -> list[dict]:
     blocks = [
@@ -483,6 +497,48 @@ class V3AgendaRendererTests(unittest.TestCase):
         html = self.render(computed, view_case())
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
         self.assertNotIn("<script>alert(1)</script>", html)
+
+
+class V3AgendaBrowserRegressionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.chrome = EXPORTER.find_chrome()
+
+    def test_bilingual_clear_feature_accepts_half_minute_duration(self) -> None:
+        if not self.chrome:
+            self.skipTest("Chrome/Chromium is not available")
+
+        computed = computed_case(language="bilingual", bilingual_dense=True)
+        computed["timeline"].insert(
+            2,
+            {
+                "id": "special:1",
+                "type": "special",
+                "label": "Member Onboarding Demo / 新会员入门演示",
+                "owner": "Grace",
+                "section": "first_half",
+                "details": [],
+                "duration": 12.5,
+                "start": "19:36",
+                "end": "19:48:30",
+            },
+        )
+        view = view_case(compact=True)
+        view["content_emphasis"] = {
+            "item_id": "special:1",
+            "strength": "clear",
+        }
+        source = RENDERER.render_agenda(computed, view, skill_dir=ROOT)
+        source = RUNNER.stabilize_headless_visual_audit(source)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            html_path = Path(temp_dir) / "agenda.html"
+            html_path.write_text(source, encoding="utf-8")
+            report = EXPORTER.run_visual_audit(self.chrome, html_path)
+
+        self.assertIsNotNone(report)
+        assert report is not None
+        self.assertIs(report.get("ok"), True)
 
 
 if __name__ == "__main__":

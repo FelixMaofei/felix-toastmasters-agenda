@@ -344,22 +344,22 @@ body {
 }
 
 .agenda-grid {
-  --cols: 18mm minmax(0, 1fr) 31mm 14mm;
+  --cols: 18mm minmax(0, 1fr) 31mm 18mm;
   display: grid;
   grid-template-columns: var(--cols);
   align-items: stretch;
 }
 
 .agenda-grid.aux-count-1 {
-  --cols: 18mm minmax(0, 1fr) 28mm 20mm 14mm;
+  --cols: 18mm minmax(0, 1fr) 28mm 20mm 18mm;
 }
 
 .agenda-grid.aux-count-2 {
-  --cols: 17mm minmax(0, 1fr) 25mm 18mm 18mm 13mm;
+  --cols: 17mm minmax(0, 1fr) 25mm 18mm 18mm 18mm;
 }
 
 .agenda-grid.aux-count-3 {
-  --cols: 16mm minmax(0, 1fr) 23mm 16mm 16mm 16mm 12mm;
+  --cols: 16mm minmax(0, 1fr) 23mm 16mm 16mm 16mm 18mm;
 }
 
 .column-head,
