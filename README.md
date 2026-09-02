@@ -6,7 +6,7 @@
 
 支持中文、英文和中英双语，生成 PNG 与 PDF。
 
-`main` 分支保存 V4.2 源码；当前最新的打包 Release 仍是 V4.1。V4.2 的 Release 会在 Codex、WorkBuddy 和豆包 Work 完成同包复测后另行发布。
+当前正式版为 V4.2。Codex、WorkBuddy 和豆包 Work 使用同一份运行包。
 
 ## 使用方式
 
@@ -25,9 +25,9 @@
 
 最后一种会原样交付你已经看到的 PDF 和 PNG，不重新排版。
 
-## 安装已发布的 V4.1
+## 安装 V4.2
 
-推荐从 [V4.1 Release](https://github.com/FelixMaofei/felix-toastmasters-agenda/releases/tag/v4.1.0) 下载 `felix-toastmasters-agenda-local.zip`，解压到 Skills 目录。这个 ZIP 只有运行所需的 Skill、程序、官方 Logo 和离线字体；不包含测试、架构说明和历史资料。
+推荐从 [V4.2 Release](https://github.com/FelixMaofei/felix-toastmasters-agenda/releases/tag/v4.2.0) 下载 `felix-toastmasters-agenda-local.zip`，解压到 Skills 目录。这个 ZIP 只有运行所需的 Skill、程序、官方 Logo、离线字体和经授权公开的内置 profile；不包含测试、架构说明和历史资料。
 
 不会安装时，把 Release 链接发给你的 AI，并说：
 
