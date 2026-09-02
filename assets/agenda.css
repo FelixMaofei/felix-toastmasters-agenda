@@ -270,20 +270,9 @@ body {
 
 .meta-strip {
   display: grid;
+  grid-template-columns: 1.05fr 0.95fr 2.15fr 1.05fr 0.9fr;
   margin: 1.1mm 0;
   border-block: 0.28mm solid var(--gold);
-}
-
-.meta-strip[data-meta-count="3"] {
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr) minmax(0, 2.15fr);
-}
-
-.meta-strip[data-meta-count="4"] {
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr) minmax(0, 2.05fr) minmax(0, 1fr);
-}
-
-.meta-strip[data-meta-count="5"] {
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr) minmax(0, 2.15fr) minmax(0, 1.05fr) minmax(0, 0.9fr);
 }
 
 .meta-item {

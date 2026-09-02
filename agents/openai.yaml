@@ -1,7 +1,7 @@
 interface:
   display_name: "Felix 头马会单"
-  short_description: "把头马角色接龙转成时间闭合、可打印传播的一页品牌会单"
+  short_description: "把角色接龙直接做成时间闭合的一页 A4 头马会单"
   brand_color: "#004165"
-  default_prompt: "使用 $felix-toastmasters-agenda 把下面的角色接龙做成会单：必要问题一次问清，回答后直接给我 A4 图片初版。"
+  default_prompt: "使用 $felix-toastmasters-agenda 把下面的角色接龙做成一页 A4 会单：缺必要信息就一次问清，信息齐全就直接出图。"
 policy:
   allow_implicit_invocation: true

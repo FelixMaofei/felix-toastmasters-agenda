@@ -84,21 +84,21 @@ def computed_case(
     *,
     language: str = "zh",
     workshop: bool = False,
-    english_dense: bool = False,
+    bilingual_dense: bool = False,
 ) -> dict:
     labels = (
         [
-            ("rules", "Meeting Rules", "Nina Chen", 2, "opening"),
-            ("president", "President's Opening", "Leo Li", 3, "opening"),
-            ("speech:1", "Prepared Speech 1", "Ethan Yi", 7, "first_half"),
-            ("speech:2", "Prepared Speech 2", "Luna Lu", 7, "first_half"),
-            ("speech:3", "Prepared Speech 3", "Sean Shen", 7, "first_half"),
-            ("evaluation:1", "Evaluation 1", "Iris Ai", 3, "second_half"),
-            ("evaluation:2", "Evaluation 2", "Owen Ou", 3, "second_half"),
-            ("evaluation:3", "Evaluation 3", "Ruby Ru", 3, "second_half"),
-            ("closing", "Closing Remarks", "Leo Li", 2, "closing"),
+            ("rules", "Meeting Rules / 规则介绍", "Nina 宁娜", 2, "opening"),
+            ("president", "President's Opening / 会长致辞", "Leo 李昂", 3, "opening"),
+            ("speech:1", "Prepared Speech 1 / 备稿演讲 1", "Ethan 易辰", 7, "first_half"),
+            ("speech:2", "Prepared Speech 2 / 备稿演讲 2", "Luna 陆娜", 7, "first_half"),
+            ("speech:3", "Prepared Speech 3 / 备稿演讲 3", "Sean 沈言", 7, "first_half"),
+            ("evaluation:1", "Evaluation 1 / 备稿点评 1", "Iris 艾瑞丝", 3, "second_half"),
+            ("evaluation:2", "Evaluation 2 / 备稿点评 2", "Owen 欧文", 3, "second_half"),
+            ("evaluation:3", "Evaluation 3 / 备稿点评 3", "Ruby 如冰", 3, "second_half"),
+            ("closing", "Closing Remarks / 闭幕致辞", "Leo 李昂", 2, "closing"),
         ]
-        if english_dense
+        if bilingual_dense
         else [
             ("rules", "规则介绍", "Nina 宁娜", 2, "opening"),
             ("president", "会长致辞", "Leo 李昂", 3, "opening"),
@@ -146,98 +146,34 @@ def computed_case(
             },
         )
 
-    blocks = (
-        [
-            {
-                "id": "timer_rules",
-                "group": "operations",
-                "kind": "timing",
-                "title": "Timer Rules",
-                "entries": [
-                    {"label": "≤3 min", "value": "Green 1 min left · Yellow 30 sec left · Red at time"},
-                    {"label": "3-10 min", "value": "Green 2 min left · Yellow 1 min left · Red at time"},
-                    {"label": "≥10 min", "value": "Green 5 min left · Yellow 2 min left · Red at time"},
-                ],
-            },
-            {
-                "id": "officers",
-                "group": "operations",
-                "kind": "pairs",
-                "title": "Officer Team",
-                "entries": [
-                    {"label": "President", "value": "Leo Li"},
-                    {"label": "VPE", "value": "Mia Wang"},
-                    {"label": "VPM", "value": "Sophie Su"},
-                    {"label": "VPPR", "value": "Nina Chen"},
-                ],
-            },
-            {
-                "id": "toastmasters_intro",
-                "group": "background",
-                "kind": "prose",
-                "title": "Toastmasters International",
-                "lines": [
-                    "Founded in 1924, Toastmasters helps people grow through communication and leadership practice."
-                ],
-            },
-            {
-                "id": "meeting_boundaries",
-                "group": "background",
-                "kind": "bullets",
-                "title": "Meeting Boundaries",
-                "lines": [
-                    "Respect every speaker and keep phones silent.",
-                    "Avoid politics, religion, pornography and pyramid selling.",
-                    "Leave the room clean and orderly.",
-                ],
-            },
-        ]
-        if english_dense
-        else support_blocks(include_club_intro=workshop)
-    )
+    blocks = support_blocks(include_club_intro=workshop)
     selected = [block["id"] for block in blocks]
     return {
         "schema_version": 3,
         "club": {
             "name": (
-                "Starbridge Toastmasters Club"
-                if english_dense
+                "星桥双语头马俱乐部"
+                if bilingual_dense
                 else "晨光 AI Lab 头马俱乐部"
                 if workshop
                 else "晨曦头马演讲俱乐部"
             ),
-            "default_location": (
-                "Harbor Innovation Center, Room 301"
-                if english_dense
-                else "海城市创新中心 3F · 山海厅"
-            ),
+            "default_location": "海城市创新中心 3F · 山海厅",
             "language": language,
         },
         "meeting": {
             "number": "42" if workshop else "18",
             "date": "2026-09-02",
-            "location": (
-                "Harbor Innovation Center, Room 301"
-                if english_dense
-                else "海城市创新中心 3F · 山海厅"
-            ),
+            "location": "海城市创新中心 3F · 山海厅",
             "theme": (
                 "AI Skill 深度实战"
                 if workshop
-                else "Speak Beyond Borders"
-                if english_dense
+                else "Speak Beyond Borders｜越过边界"
+                if bilingual_dense
                 else "把复杂的事，讲得简单"
             ),
-            "word_of_day": (
-                "如虎添翼"
-                if workshop
-                else "Clarity"
-                if english_dense
-                else "Clarity · 澄明"
-            ),
-            "manager": (
-                "林夏" if workshop else "Lily Lin" if english_dense else "Lily 林"
-            ),
+            "word_of_day": "如虎添翼" if workshop else "Clarity · 澄明",
+            "manager": "林夏" if workshop else "Lily 林",
         },
         "computed": {
             "status": "exact",
@@ -248,17 +184,10 @@ def computed_case(
             "total_minutes": 120,
         },
         "timeline": timeline,
-        "backstage": (
-            [
-                {"label": "Photographer", "person": "Shuwen Zheng"},
-                {"label": "Stage and Slides", "person": "Maggie Zhao"},
-            ]
-            if english_dense
-            else [
-                {"label": "拍照官", "person": "舒文"},
-                {"label": "场控 / PPT", "person": "望舒"},
-            ]
-        ),
+        "backstage": [
+            {"label": "拍照官", "person": "舒文"},
+            {"label": "场控 / PPT", "person": "望舒"},
+        ],
         "support_components": selected,
         "support_blocks": blocks,
         "custom_support_blocks": [],
@@ -334,83 +263,27 @@ class V3AgendaRendererTests(unittest.TestCase):
         workshop = self.render(
             computed_case(workshop=True), view_case(workshop=True)
         )
-        english_dense = self.render(
-            computed_case(language="en", english_dense=True),
+        bilingual = self.render(
+            computed_case(language="bilingual", bilingual_dense=True),
             view_case(compact=True),
         )
         styles = [
             html.partition("<style>")[2].partition("</style>")[0]
-            for html in (ordinary, workshop, english_dense)
+            for html in (ordinary, workshop, bilingual)
         ]
         self.assertEqual(styles[0], styles[1])
         self.assertEqual(styles[1], styles[2])
-        for html in (ordinary, workshop, english_dense):
+        for html in (ordinary, workshop, bilingual):
             self.assertEqual(html.count('class="agenda-page"'), 1)
             self.assertIn('class="brand-header"', html)
-            self.assertIn('class="meta-strip" data-meta-count="5"', html)
             self.assertIn('class="agenda-panel"', html)
             self.assertIn('class="support-area"', html)
             self.assertNotRegex(
                 html,
                 r'class="[^"]*(?:layout-standard|layout-feature|layout-marathon)',
             )
-        self.assertIn('data-language="en"', english_dense)
-        self.assertNotRegex(english_dense, r"[\u4e00-\u9fff]")
-        self.assertNotIn("marathon-flow", english_dense)
-
-    def test_empty_optional_metadata_does_not_render_empty_items(self) -> None:
-        computed = computed_case()
-        computed["meeting"]["word_of_day"] = "  "
-        computed["meeting"]["manager"] = None
-        html = self.render(computed, view_case())
-
-        self.assertIn('class="meta-strip" data-meta-count="3"', html)
-        self.assertEqual(html.count('class="meta-item '), 3)
-        self.assertIn('class="meta-item date"', html)
-        self.assertIn('class="meta-item time"', html)
-        self.assertIn('class="meta-item location"', html)
-        self.assertIn("2026-09-02", html)
-        self.assertIn("19:30-21:30", html)
-        self.assertIn("海城市创新中心 3F · 山海厅", html)
-        self.assertNotIn("今日一词", html)
-        self.assertNotIn("会议经理", html)
-        self.assertNotRegex(html, r'<span class="meta-value">\s*</span>')
-
-    def test_metadata_strip_uses_explicit_three_four_and_five_item_layouts(self) -> None:
-        three = computed_case()
-        three["meeting"]["word_of_day"] = ""
-        three["meeting"]["manager"] = ""
-        four = computed_case()
-        four["meeting"]["manager"] = ""
-        five = computed_case()
-
-        for count, computed in ((3, three), (4, four), (5, five)):
-            html = self.render(computed, view_case())
-            self.assertIn(f'data-meta-count="{count}"', html)
-            self.assertEqual(html.count('class="meta-item '), count)
-
-        css = (ROOT / "assets" / "agenda.css").read_text(encoding="utf-8")
-        for count in (3, 4, 5):
-            self.assertIn(f'.meta-strip[data-meta-count="{count}"]', css)
-        self.assertRegex(
-            css,
-            r'data-meta-count="3"\][^{]*\{[^}]*2\.15fr',
-        )
-        self.assertRegex(
-            css,
-            r'data-meta-count="4"\][^{]*\{[^}]*2\.05fr',
-        )
-        self.assertRegex(
-            css,
-            r'data-meta-count="5"\][^{]*\{[^}]*2\.15fr',
-        )
-
-    def test_renderer_rejects_bilingual_v3_facts(self) -> None:
-        with self.assertRaisesRegex(
-            RENDERER.AgendaRenderError,
-            "V3 agenda.computed.club.language must be zh or en",
-        ):
-            self.render(computed_case(language="bilingual"), view_case())
+        self.assertIn('data-language="bilingual"', bilingual)
+        self.assertNotIn("marathon-flow", bilingual)
 
     def test_sixty_minute_feature_is_compact_emphasis_not_area_allocation(self) -> None:
         html = self.render(
@@ -489,6 +362,15 @@ class V3AgendaRendererTests(unittest.TestCase):
         self.assertNotIn("/Users/", html)
         self.assertNotIn("url(./files/", html)
         self.assertNotIn('@import url("./fonts/', html)
+
+    def test_html_requires_and_embeds_real_visual_audit(self) -> None:
+        html = self.render(computed_case(), view_case())
+
+        self.assertIn('<meta name="agenda-visual-audit" content="required">', html)
+        self.assertIn('id="agenda-audit-result"', html)
+        self.assertIn("page_height", html)
+        self.assertIn("outside_page", html)
+        self.assertIn("font_missing", html)
 
     def test_only_contract_density_names_exist_in_shared_css(self) -> None:
         css = (ROOT / "assets" / "agenda.css").read_text(encoding="utf-8")

@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -26,6 +27,13 @@ CHROME_CANDIDATES = [
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
     "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
 ]
+
+CHROME_POLL_INTERVAL_SECONDS = 0.05
+CHROME_FILE_STABLE_SECONDS = 0.5
+CHROME_SHUTDOWN_TIMEOUT_SECONDS = 3.0
+PDF_SIGNATURE = b"%PDF-"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PNG_IEND = b"IEND\xaeB`\x82"
 
 
 def find_chrome() -> str | None:
@@ -55,24 +63,98 @@ def expected_page_count(html_path: Path) -> int:
     return count
 
 
-def run_chrome(command: list[str], expected_file: Path, timeout: int = 25) -> int:
+def chrome_output_is_complete(path: Path) -> bool:
+    """Return true only after Chrome has written a structurally complete file."""
+
     try:
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if (
-            result.returncode != 0
-            and expected_file.is_file()
-            and expected_file.stat().st_size > 1000
-        ):
-            return 0
-        return result.returncode
+        if not path.is_file() or path.stat().st_size <= 1000:
+            return False
+        with path.open("rb") as handle:
+            signature = handle.read(len(PNG_SIGNATURE))
+            handle.seek(max(0, path.stat().st_size - 2048))
+            tail = handle.read()
+    except OSError:
+        return False
+
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return signature.startswith(PDF_SIGNATURE) and b"%%EOF" in tail
+    if suffix == ".png":
+        return signature == PNG_SIGNATURE and PNG_IEND in tail
+    return True
+
+
+def stop_chrome_process(process: subprocess.Popen[bytes]) -> None:
+    """Stop only the Chrome process started for this export."""
+
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except OSError:
+        return
+    try:
+        process.wait(timeout=CHROME_SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        return 0 if expected_file.is_file() and expected_file.stat().st_size > 1000 else 124
+        try:
+            process.kill()
+        except OSError:
+            return
+        try:
+            process.wait(timeout=CHROME_SHUTDOWN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def run_chrome(command: list[str], expected_file: Path, timeout: int = 25) -> int:
+    """Run Chrome until it exits or its complete output has remained stable."""
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    started_at = time.monotonic()
+    stable_signature: tuple[int, int] | None = None
+    stable_since: float | None = None
+
+    while True:
+        now = time.monotonic()
+        return_code = process.poll()
+        complete = chrome_output_is_complete(expected_file)
+
+        if complete:
+            try:
+                stat = expected_file.stat()
+                signature = (stat.st_size, stat.st_mtime_ns)
+            except OSError:
+                signature = None
+                complete = False
+            if complete and signature != stable_signature:
+                stable_signature = signature
+                stable_since = now
+            elif (
+                complete
+                and stable_since is not None
+                and now - stable_since >= CHROME_FILE_STABLE_SECONDS
+            ):
+                stop_chrome_process(process)
+                return 0
+        else:
+            stable_signature = None
+            stable_since = None
+
+        if return_code is not None:
+            if complete:
+                return 0
+            return return_code
+
+        if now - started_at >= timeout:
+            stop_chrome_process(process)
+            return 0 if chrome_output_is_complete(expected_file) else 124
+
+        remaining = timeout - (now - started_at)
+        time.sleep(min(CHROME_POLL_INTERVAL_SECONDS, max(0.0, remaining)))
 
 
 def page_count(pdf_path: Path) -> int | None:

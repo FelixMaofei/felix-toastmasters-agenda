@@ -30,6 +30,25 @@ else:
     PROFILE_ROOT = Path.home() / ".toastmasters-agenda" / "profiles"
 
 UNRESOLVED = {"", "?", "？", "🌺", "待定", "待确认", "招募中", "tbd", "pending", "todo"}
+GENERIC_SPECIAL_OWNERS = {
+    "主持人",
+    "总主持",
+    "负责人",
+    "主讲人",
+    "讲师",
+    "嘉宾",
+    "toastmaster",
+    "host",
+    "facilitator",
+    "presenter",
+    "speaker",
+    "owner",
+    "role taker",
+    "person in charge",
+    "tbc",
+    "to be confirmed",
+    "to be decided",
+}
 LANGUAGES = {"zh", "en", "bilingual"}
 LAYOUTS = {"auto", "standard", "feature", "marathon"}
 VISUAL_THEMES = {
@@ -244,6 +263,11 @@ SUPPORT_COMPONENTS = {
     "vpm_qr",
     "voting_qr",
 }
+DEFAULT_SUPPORT_COMPONENTS = [
+    "timer_rules",
+    "toastmasters_intro",
+    "meeting_boundaries",
+]
 
 TOASTMASTERS_INTRO = {
     "zh": (
@@ -333,6 +357,17 @@ def is_unresolved(value: Any) -> bool:
         return True
     text = str(value).strip()
     return text.lower() in UNRESOLVED or text in UNRESOLVED or "{{" in text or "}}" in text
+
+
+def is_generic_special_owner(value: Any) -> bool:
+    """Reject role labels used in place of a named special-session owner.
+
+    Matching is deliberately exact after light Unicode and whitespace normalization so
+    names such as ``主持人小王`` or ``Toastmaster Jane`` remain valid.
+    """
+    normalized = unicodedata.normalize("NFKC", str(value)).strip().casefold()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized in GENERIC_SPECIAL_OWNERS
 
 
 def half_minute_value(value: Any, *, allow_zero: bool) -> int | float | None:
@@ -796,17 +831,6 @@ def parse_officers(value: Any, errors: list[str]) -> list[dict[str, str]]:
     return result
 
 
-def profile_president_name(value: Any) -> str:
-    if not isinstance(value, list):
-        return ""
-    for row in value:
-        if not isinstance(row, dict):
-            continue
-        if normalize_officer_key(row.get("role")) == "president":
-            return "" if row.get("name") is None else str(row.get("name")).strip()
-    return ""
-
-
 def parse_support_components(value: Any, errors: list[str]) -> list[str]:
     if not isinstance(value, list):
         errors.append(
@@ -825,6 +849,31 @@ def parse_support_components(value: Any, errors: list[str]) -> list[str]:
             continue
         result.append(component)
     return result
+
+
+def resolve_support_components(
+    meeting: dict[str, Any],
+    club: dict[str, Any],
+    errors: list[str],
+) -> list[str]:
+    """Choose current-meeting selection, then profile selection, then safe defaults.
+
+    An explicit empty array is meaningful and must remain agenda-only. When neither the
+    meeting nor the club profile chooses components, the three universal information
+    blocks are included without asking the user. The officer block is added only when
+    the stored team already passes the normal officer validation.
+    """
+    if "support_components" in meeting:
+        raw_components = meeting["support_components"]
+    elif "support_components" in club:
+        raw_components = club["support_components"]
+    else:
+        raw_components = list(DEFAULT_SUPPORT_COMPONENTS)
+        officer_errors: list[str] = []
+        parse_officers(club.get("officers"), officer_errors)
+        if not officer_errors:
+            raw_components.append("officers")
+    return parse_support_components(raw_components, errors)
 
 
 def parse_custom_support_blocks(
@@ -1662,17 +1711,34 @@ def build_items(
             continue
         title = segment.get("title")
         owner = segment.get("owner")
-        duration = positive_minutes(segment.get("minutes"))
+        minutes_value = segment.get("minutes")
+        duration = positive_minutes(minutes_value)
+        raw_anchor = segment.get("after")
+        invalid_segment = False
         if is_unresolved(title):
             errors.append(f"special segment {index} has unresolved title")
+            invalid_segment = True
         if is_unresolved(owner):
             errors.append(f"special segment {index} has unresolved owner")
+            invalid_segment = True
+        elif is_generic_special_owner(owner):
+            errors.append(
+                f"special segment {index} owner must name a real person, "
+                f"not a generic role: {str(owner).strip()!r}"
+            )
+            invalid_segment = True
         if duration is None:
             errors.append(
                 f"special segment {index} minutes must be positive in 0.5-minute increments"
             )
-            duration = 1
-        anchor = str(segment.get("after", "guest_introduction")).strip()
+            invalid_segment = True
+        if is_unresolved(raw_anchor):
+            errors.append(f"special segment {index} has unresolved after anchor")
+            invalid_segment = True
+        if invalid_segment:
+            continue
+        assert duration is not None
+        anchor = str(raw_anchor).strip()
         anchor = last_anchor.get(anchor, anchor)
         anchor_index = next((i for i, item in enumerate(items) if item["id"] == anchor), None)
         if anchor_index is None:
@@ -1692,7 +1758,7 @@ def build_items(
             source="special",
         )
         items.insert(anchor_index + 1, special)
-        original_anchor = str(segment.get("after", "guest_introduction")).strip()
+        original_anchor = str(raw_anchor).strip()
         last_anchor[original_anchor] = special_id
 
     return items
@@ -1951,10 +2017,6 @@ def build_agenda(
     if language not in LANGUAGES:
         errors.append("club.language must be zh, en, or bilingual")
         language = "zh"
-    elif facts_only and language == "bilingual":
-        errors.append(
-            "V3 club.language must be zh or en; bilingual is supported only by V2"
-        )
     meeting = normalized.get("meeting")
     if not isinstance(meeting, dict):
         errors.append("meeting must be an object")
@@ -1971,26 +2033,7 @@ def build_agenda(
     if is_unresolved(location):
         errors.append("meeting location is unresolved")
     meeting["location"] = "" if location is None else str(location).strip()
-    support_components = parse_support_components(
-        meeting.get("support_components", club.get("support_components")),
-        errors,
-    )
-    if (
-        facts_only
-        and "support_components" not in meeting
-        and "officers" in support_components
-        and not is_unresolved(meeting.get("president"))
-    ):
-        current_president = normalized_club_name(meeting.get("president"))
-        stored_president = normalized_club_name(
-            profile_president_name(club.get("officers"))
-        )
-        if stored_president and current_president != stored_president:
-            support_components = [
-                component
-                for component in support_components
-                if component != "officers"
-            ]
+    support_components = resolve_support_components(meeting, club, errors)
     custom_support_blocks = parse_custom_support_blocks(
         meeting.get(
             "custom_support_blocks",

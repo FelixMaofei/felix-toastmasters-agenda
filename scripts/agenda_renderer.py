@@ -123,6 +123,71 @@ DATA_IMAGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+VISUAL_AUDIT_SCRIPT = r"""
+<script id="agenda-audit-result" type="application/json"></script>
+<script>
+(() => {
+  const writeResult = (report) => {
+    const target = document.getElementById("agenda-audit-result");
+    target.textContent = JSON.stringify(report);
+    document.documentElement.dataset.agendaAudit = report.ok ? "ok" : "failed";
+  };
+
+  const audit = async () => {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+    const failures = [];
+    const fail = (code, detail) => failures.push({code, detail});
+    const pages = Array.from(document.querySelectorAll(".agenda-page"));
+    if (pages.length !== 1) {
+      fail("page_count", `expected 1 agenda page, found ${pages.length}`);
+    }
+
+    const page = pages[0];
+    if (page) {
+      const pageRect = page.getBoundingClientRect();
+      const expectedHeight = pageRect.width * 297 / 210;
+      if (Math.abs(pageRect.height - expectedHeight) > 4) {
+        fail("page_height", `page height ${pageRect.height.toFixed(1)}px; expected ${expectedHeight.toFixed(1)}px`);
+      }
+      if (page.scrollWidth > page.clientWidth + 2 || page.scrollHeight > page.clientHeight + 2) {
+        fail("page_overflow", `scroll ${page.scrollWidth}x${page.scrollHeight}; client ${page.clientWidth}x${page.clientHeight}`);
+      }
+
+      const visibleSelectors = [
+        ".brand-header", ".meta-strip", ".agenda-panel", ".agenda-row",
+        ".support-card", ".page-footer"
+      ];
+      for (const element of document.querySelectorAll(visibleSelectors.join(","))) {
+        const rect = element.getBoundingClientRect();
+        if (rect.right > pageRect.right + 2 || rect.bottom > pageRect.bottom + 2 ||
+            rect.left < pageRect.left - 2 || rect.top < pageRect.top - 2) {
+          fail("outside_page", `${element.className || element.tagName} is outside the A4 page`);
+        }
+        if (element.clientWidth > 0 && element.scrollWidth > element.clientWidth + 2) {
+          fail("horizontal_clip", `${element.className || element.tagName} clips horizontally`);
+        }
+        if (element.clientHeight > 0 && element.scrollHeight > element.clientHeight + 2) {
+          fail("vertical_clip", `${element.className || element.tagName} clips vertically`);
+        }
+      }
+    }
+
+    if (document.fonts && !document.fonts.check('12px "Noto Sans SC Variable"')) {
+      fail("font_missing", "bundled agenda font did not load");
+    }
+    writeResult({ok: failures.length === 0, failures});
+  };
+
+  audit().catch((error) => writeResult({
+    ok: false,
+    failures: [{code: "audit_exception", detail: String(error)}]
+  }));
+})();
+</script>
+"""
+
 
 def _e(value: object) -> str:
     return escape(str(value), quote=True)
@@ -923,10 +988,10 @@ def _meeting_title_parts(
 ) -> tuple[str, str]:
     number = _display_value(meeting.get("number", ""))
     if language == "en":
-        return (f"Meeting {number}" if number else "Club Meeting", "Meeting Agenda")
+        return (f"Meeting {number}" if number else "Club Meeting", "Agenda")
     if language == "bilingual":
         edition = f"第 {number} 期 / Meeting {number}" if number else "Club Meeting / 例会"
-        return edition, "例会议程 / Meeting Agenda"
+        return edition, "例会议程 / Agenda"
     return (f"第 {number} 期" if number else "例会", "例会议程")
 
 
@@ -968,9 +1033,9 @@ def render_agenda(
         computed.get("computed", {}), "agenda.computed.computed"
     )
     language = str(club.get("language", "zh")).strip() or "zh"
-    if language not in {"zh", "en"}:
+    if language not in {"zh", "en", "bilingual"}:
         raise AgendaRenderError(
-            "V3 agenda.computed.club.language must be zh or en"
+            "agenda.computed.club.language must be zh, en, or bilingual"
         )
 
     edition, agenda_label = _meeting_title_parts(meeting, language)
@@ -995,15 +1060,15 @@ def render_agenda(
         (
             _localize("日期", "Date", language),
             _display_value(meeting.get("date", "")),
-            "date",
+            "",
         ),
-        (_localize("时间", "Time", language), time_range, "time"),
+        (_localize("时间", "Time", language), time_range, ""),
         (
             _localize("地点", "Location", language),
             _display_value(
                 meeting.get("location", club.get("default_location", ""))
             ),
-            "location",
+            "",
         ),
         (
             _localize("今日一词", "Word of the Day", language),
@@ -1013,10 +1078,9 @@ def render_agenda(
         (
             _localize("会议经理", "Meeting Manager", language),
             _display_value(meeting.get("manager", "")),
-            "manager",
+            "",
         ),
     ]
-    meta = [item for item in meta if _nonempty_text(item[1])]
     meta_html = "".join(
         f'<div class="meta-item{" " + css_class if css_class else ""}">'
         f'<span class="meta-label">{_e(label)}</span>'
@@ -1034,6 +1098,7 @@ def render_agenda(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="agenda-page-count" content="1">
   <meta name="agenda-workflow" content="v3-preview">
+  <meta name="agenda-visual-audit" content="required">
   <title>{_e(page_title)}</title>
   <style>{css}</style>
 </head>
@@ -1052,7 +1117,7 @@ def render_agenda(
       </div>
     </header>
 
-    <section class="meta-strip" data-meta-count="{len(meta)}" aria-label="{_e(_localize('会议信息', 'Meeting information', language))}">
+    <section class="meta-strip" aria-label="{_e(_localize('会议信息', 'Meeting information', language))}">
       {meta_html}
     </section>
 
@@ -1070,6 +1135,7 @@ def render_agenda(
       <span class="page-mark">1 / 1</span>
     </footer>
   </article>
+  {VISUAL_AUDIT_SCRIPT}
 </body>
 </html>
 """

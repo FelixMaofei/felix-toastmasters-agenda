@@ -23,23 +23,6 @@ def example() -> dict:
 
 
 class AgendaBuilderTests(unittest.TestCase):
-    def test_v3_omits_inherited_officers_when_current_president_differs(self) -> None:
-        data = example()
-        data["meeting"]["president"] = "Current President"
-        next(
-            officer
-            for officer in data["club"]["officers"]
-            if officer["role"] == "President"
-        )["name"] = "Stored President"
-
-        result, errors, _ = BUILDER.build_agenda(data, facts_only=True)
-
-        self.assertEqual(errors, [])
-        self.assertNotIn(
-            "officers",
-            [block["id"] for block in result["support_blocks"]],
-        )
-
     def test_standard_example_closes_exactly(self) -> None:
         result, errors, warnings = BUILDER.build_agenda(example())
         self.assertEqual(errors, [])
@@ -107,6 +90,69 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(errors, [])
         ids = [row["id"] for row in result["timeline"]]
         self.assertEqual(ids.index("special:1"), ids.index("prepared_speech:1") + 1)
+
+    def test_special_segment_reports_all_required_fields_together(self) -> None:
+        data = example()
+        data["special_segments"] = [{}]
+        result, errors, _ = BUILDER.build_agenda(data)
+        special_errors = [
+            error for error in errors if error.startswith("special segment 1")
+        ]
+        self.assertEqual(
+            special_errors,
+            [
+                "special segment 1 has unresolved title",
+                "special segment 1 has unresolved owner",
+                "special segment 1 minutes must be positive in 0.5-minute increments",
+                "special segment 1 has unresolved after anchor",
+            ],
+        )
+        self.assertFalse(any(row["type"] == "special" for row in result["timeline"]))
+
+    def test_special_segment_never_guesses_a_missing_anchor(self) -> None:
+        data = example()
+        data["special_segments"] = [
+            {"title": "AI领航", "owner": "成员K", "minutes": 5}
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertTrue(any("unresolved after anchor" in error for error in errors))
+        self.assertFalse(any(row["type"] == "special" for row in result["timeline"]))
+
+    def test_special_segment_rejects_generic_owner_roles_but_accepts_named_people(self) -> None:
+        for owner in ("主持人", "Toastmaster", "负责人", "TBD"):
+            with self.subTest(owner=owner):
+                data = example()
+                data["special_segments"] = [
+                    {
+                        "title": "AI领航",
+                        "owner": owner,
+                        "minutes": 5,
+                        "after": "prepared_speech:1",
+                    }
+                ]
+                result, errors, _ = BUILDER.build_agenda(data)
+                self.assertTrue(any("owner" in error for error in errors))
+                self.assertFalse(
+                    any(row["type"] == "special" for row in result["timeline"])
+                )
+
+        for owner in ("主持人小王", "Toastmaster Jane"):
+            with self.subTest(owner=owner):
+                data = example()
+                data["special_segments"] = [
+                    {
+                        "title": "AI领航",
+                        "owner": owner,
+                        "minutes": 5,
+                        "after": "prepared_speech:1",
+                    }
+                ]
+                result, errors, _ = BUILDER.build_agenda(data)
+                self.assertEqual(errors, [])
+                special = next(
+                    row for row in result["timeline"] if row["type"] == "special"
+                )
+                self.assertEqual(special["owner"], owner)
 
     def test_layout_router_selects_standard_feature_and_marathon(self) -> None:
         standard, standard_errors, _ = BUILDER.build_agenda(example())
@@ -250,6 +296,29 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertNotIn("meeting", profile)
         self.assertNotIn("roles", profile)
         self.assertNotIn("prepared_speeches", profile)
+
+    def test_current_meeting_facts_override_profile_without_mutating_it(self) -> None:
+        stable = example()
+        profile = BUILDER.club_profile_from_data(stable)
+        current = example()
+        current["club"] = {
+            "name": stable["club"]["name"],
+            "language": "bilingual",
+        }
+        current["meeting"]["location"] = "本期临时会场 / Temporary Venue"
+        current["meeting"]["support_components"] = []
+
+        merged = BUILDER.deep_merge(profile, current)
+        result, errors, _ = BUILDER.build_agenda(merged)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(result["club"]["language"], "bilingual")
+        self.assertEqual(
+            result["meeting"]["location"], "本期临时会场 / Temporary Venue"
+        )
+        self.assertEqual(result["support_components"], [])
+        self.assertEqual(profile["club"]["language"], "zh")
+        self.assertNotIn("meeting", profile)
 
     def test_stored_club_profile_path_is_stable_and_name_specific(self) -> None:
         first = BUILDER.stored_club_profile_path("星河头马演讲俱乐部")
@@ -649,11 +718,40 @@ class AgendaBuilderTests(unittest.TestCase):
         _, errors, _ = BUILDER.build_agenda(data)
         self.assertEqual(errors, [])
 
-    def test_support_component_selection_is_required(self) -> None:
+    def test_missing_support_component_selection_uses_safe_defaults(self) -> None:
         data = example()
         del data["club"]["support_components"]
-        _, errors, _ = BUILDER.build_agenda(data)
-        self.assertTrue(any("support_components must be an explicit array" in error for error in errors))
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            result["support_components"],
+            [
+                "timer_rules",
+                "toastmasters_intro",
+                "meeting_boundaries",
+                "officers",
+            ],
+        )
+
+    def test_missing_support_selection_does_not_require_officer_data(self) -> None:
+        data = example()
+        del data["club"]["support_components"]
+        del data["club"]["officers"]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            result["support_components"], BUILDER.DEFAULT_SUPPORT_COMPONENTS
+        )
+
+    def test_implicit_support_defaults_skip_incomplete_officer_team(self) -> None:
+        data = example()
+        del data["club"]["support_components"]
+        data["club"]["officers"] = data["club"]["officers"][:-1]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            result["support_components"], BUILDER.DEFAULT_SUPPORT_COMPONENTS
+        )
 
     def test_selected_officer_component_requires_core_team(self) -> None:
         data = example()
