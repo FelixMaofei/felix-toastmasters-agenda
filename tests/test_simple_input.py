@@ -51,18 +51,26 @@ def minimal() -> dict:
 class SimpleInputTests(unittest.TestCase):
     def test_converted_example_is_accepted_by_existing_business_engine(self) -> None:
         canonical_example = json.loads(
-            (ROOT / "examples" / "meeting.example.json").read_text(encoding="utf-8")
+            (ROOT / "examples" / "meeting.fixture.json").read_text(encoding="utf-8")
         )
         data = {
             "simple_version": 1,
             "club": canonical_example["club"],
-            "meeting": canonical_example["meeting"],
+            "meeting": {
+                key: value
+                for key, value in canonical_example["meeting"].items()
+                if key != "approved_overtime_minutes"
+            },
             "roles": [
                 {"role": row["id"], "person": row["person"]}
                 for row in canonical_example["roles"]
             ],
             "speeches": canonical_example["prepared_speeches"],
-            "impromptu": canonical_example["impromptu"],
+            "impromptu": {
+                **canonical_example["impromptu"],
+                "minutes": 14,
+                "evaluation_minutes": 7,
+            },
             "backstage": [
                 {
                     "role": row["id"],
@@ -72,6 +80,10 @@ class SimpleInputTests(unittest.TestCase):
                 for row in canonical_example["backstage"]
             ],
             "special": [],
+            "agenda_overrides": [
+                {"id": "photo_break", "minutes": 4},
+                {"id": "sharing", "minutes": 6},
+            ],
         }
 
         canonical = SIMPLE.convert_simple_input(data)
@@ -183,7 +195,7 @@ class SimpleInputTests(unittest.TestCase):
     def test_all_role_ids_accept_common_chinese_and_english_aliases(self) -> None:
         aliases = {
             "会长": "president",
-            "Meeting Rules Host": "rules_host",
+            "事务官": "rules_host",
             "Toastmaster of the Day": "toastmaster",
             "时间官": "timer",
             "Ah-Counter": "ah_counter",
@@ -202,6 +214,14 @@ class SimpleInputTests(unittest.TestCase):
         self.assertEqual(
             [row["id"] for row in result["roles"]], list(aliases.values())
         )
+
+    def test_rules_host_accepts_club_specific_sergeant_at_arms_names(self) -> None:
+        for alias in ("事务官开场", "会场事务官", "SAA", "Sergeant at Arms"):
+            with self.subTest(alias=alias):
+                data = minimal()
+                data["roles"] = [{"role": alias, "person": "Member A"}]
+                result = SIMPLE.convert_simple_input(data)
+                self.assertEqual(result["roles"], [{"id": "rules_host", "person": "Member A"}])
 
     def test_language_aliases_are_deterministic(self) -> None:
         for raw, expected in (
@@ -292,6 +312,39 @@ class SimpleInputTests(unittest.TestCase):
             },
         )
 
+    def test_impromptu_requires_all_current_session_durations_together(self) -> None:
+        data = minimal()
+        data["impromptu"] = {"host": "Alice", "evaluator": "Bob"}
+
+        with self.assertRaises(SIMPLE.SimpleInputError) as caught:
+            SIMPLE.convert_simple_input(data)
+
+        issues = [
+            issue
+            for issue in caught.exception.errors
+            if issue["path"].startswith("impromptu.")
+        ]
+        self.assertEqual(
+            {(issue["code"], issue["path"]) for issue in issues},
+            {
+                ("missing_value", "impromptu.minutes"),
+                ("missing_value", "impromptu.evaluation_minutes"),
+            },
+        )
+
+    def test_selected_join_info_is_not_synthesized_by_simple_pipeline(self) -> None:
+        data = minimal()
+        data["club"]["support_components"] = ["join_info"]
+
+        canonical = SIMPLE.convert_simple_input(data)
+        result, errors, _ = BUILDER.build_agenda(canonical)
+
+        self.assertIn(
+            "join_info component is selected but club.join_info is empty",
+            errors,
+        )
+        self.assertEqual(result["club"]["join_info"], [])
+
     def test_disabled_evaluation_does_not_require_or_emit_evaluator(self) -> None:
         data = minimal()
         data["speeches"] = [
@@ -334,6 +387,31 @@ class SimpleInputTests(unittest.TestCase):
         self.assertTrue(
             all(issue["code"] == "unknown_field" for issue in caught.exception.errors)
         )
+
+    def test_simple_input_never_accepts_embedded_overtime_approval(self) -> None:
+        for value in (0, 11, 11.5):
+            with self.subTest(value=value):
+                data = minimal()
+                data["meeting"]["approved_overtime_minutes"] = value
+                with self.assertRaises(SIMPLE.SimpleInputError) as caught:
+                    SIMPLE.convert_simple_input(data)
+                issues = caught.exception.errors
+                self.assertTrue(
+                    any(
+                        issue["code"] == "overtime_approval_not_allowed"
+                        and issue["path"] == "meeting.approved_overtime_minutes"
+                        and issue["value"] == value
+                        for issue in issues
+                    )
+                )
+                self.assertIn(
+                    "--confirm-overtime-minutes",
+                    next(
+                        issue["message"]
+                        for issue in issues
+                        if issue["code"] == "overtime_approval_not_allowed"
+                    ),
+                )
 
     def test_invalid_version_and_minutes_have_structured_errors(self) -> None:
         data = minimal()

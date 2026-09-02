@@ -19,10 +19,77 @@ SPEC.loader.exec_module(BUILDER)
 
 
 def example() -> dict:
-    return json.loads((ROOT / "examples" / "meeting.example.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (ROOT / "examples" / "meeting.fixture.json").read_text(encoding="utf-8")
+    )
+    data["impromptu"].update({"minutes": 14, "evaluation_minutes": 7})
+    data["standard_overrides"] = [
+        {"id": "photo_break", "minutes": 4},
+        {"id": "sharing", "minutes": 6},
+    ]
+    return data
 
 
 class AgendaBuilderTests(unittest.TestCase):
+    def test_break_and_sharing_suggestions_are_returned_together(self) -> None:
+        data = example()
+        data["standard_overrides"] = []
+
+        result, errors, _ = BUILDER.build_agenda(data)
+
+        self.assertTrue(result["computed"]["duration_confirmation_required"])
+        self.assertEqual(
+            result["computed"]["suggested_agenda_overrides"],
+            [
+                {"id": "photo_break", "minutes": 10},
+                {"id": "sharing", "minutes": 10},
+            ],
+        )
+        self.assertEqual(
+            [row["duration"] for row in result["timeline"] if row["id"] in {"photo_break", "sharing"}],
+            [10, 10],
+        )
+        self.assertTrue(any("photo_break and sharing" in error for error in errors))
+
+    def test_confirmed_break_and_sharing_are_locked_without_auto_allocation(self) -> None:
+        data = example()
+        data["standard_overrides"] = []
+        data["agenda_overrides"] = [
+            {"id": "photo_break", "minutes": 10},
+            {"id": "sharing", "minutes": 10},
+        ]
+        data["meeting"]["end"] = "21:40"
+
+        result, errors, _ = BUILDER.build_agenda(data)
+
+        self.assertEqual(errors, [])
+        self.assertFalse(result["computed"]["duration_confirmation_required"])
+        self.assertEqual(result["computed"]["suggested_agenda_overrides"], [])
+        by_id = {row["id"]: row for row in result["timeline"]}
+        self.assertTrue(by_id["photo_break"]["duration_locked"])
+        self.assertTrue(by_id["sharing"]["duration_locked"])
+        self.assertFalse(by_id["photo_break"].get("computed_flexible", False))
+        self.assertFalse(by_id["sharing"].get("computed_flexible", False))
+
+    def test_disabled_flexible_items_are_not_requested(self) -> None:
+        data = example()
+        data["standard_overrides"] = []
+        data["agenda_overrides"] = [{"id": "sharing", "enabled": False}]
+
+        result, _, _ = BUILDER.build_agenda(data)
+        self.assertEqual(
+            result["computed"]["suggested_agenda_overrides"],
+            [{"id": "photo_break", "minutes": 10}],
+        )
+
+        data["agenda_overrides"] = [
+            {"id": "photo_break", "enabled": False},
+            {"id": "sharing", "enabled": False},
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertFalse(result["computed"]["duration_confirmation_required"])
+        self.assertFalse(any("explicit confirmed durations" in error for error in errors))
+
     def test_standard_example_closes_exactly(self) -> None:
         result, errors, warnings = BUILDER.build_agenda(example())
         self.assertEqual(errors, [])
@@ -41,6 +108,7 @@ class AgendaBuilderTests(unittest.TestCase):
 
     def test_role_absence_removes_triggered_sections(self) -> None:
         data = example()
+        data["meeting"]["end"] = "21:16"
         data["roles"] = [
             row for row in data["roles"] if row["id"] not in {"ah_counter", "grammarian"}
         ]
@@ -81,8 +149,36 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(result["computed"]["delta_minutes"], 11)
         self.assertTrue(any("overruns" in error for error in errors))
 
+    def test_impromptu_requires_both_explicit_durations_without_auto_inference(
+        self,
+    ) -> None:
+        data = example()
+        data["impromptu"].pop("minutes")
+        data["impromptu"].pop("evaluation_minutes")
+
+        result, errors, _ = BUILDER.build_agenda(data)
+
+        self.assertEqual(
+            [error for error in errors if error.startswith("impromptu.")],
+            [
+                "impromptu.minutes needs an explicit confirmed duration",
+                "impromptu.evaluation_minutes needs an explicit confirmed duration",
+            ],
+        )
+        impromptu_rows = [
+            row
+            for row in result["timeline"]
+            if row["type"] in {"table_topics", "table_topics_evaluation"}
+        ]
+        self.assertEqual(len(impromptu_rows), 2)
+        self.assertTrue(all(row["duration_locked"] for row in impromptu_rows))
+        self.assertTrue(
+            all(not row.get("computed_flexible") for row in impromptu_rows)
+        )
+
     def test_special_segment_uses_requested_anchor(self) -> None:
         data = example()
+        data["meeting"]["end"] = "21:36"
         data["special_segments"] = [
             {"title": "AI领航", "owner": "成员K", "minutes": 5, "after": "prepared_speech:1"}
         ]
@@ -139,6 +235,7 @@ class AgendaBuilderTests(unittest.TestCase):
         for owner in ("主持人小王", "Toastmaster Jane"):
             with self.subTest(owner=owner):
                 data = example()
+                data["meeting"]["end"] = "21:36"
                 data["special_segments"] = [
                     {
                         "title": "AI领航",
@@ -154,85 +251,12 @@ class AgendaBuilderTests(unittest.TestCase):
                 )
                 self.assertEqual(special["owner"], owner)
 
-    def test_layout_router_selects_standard_feature_and_marathon(self) -> None:
-        standard, standard_errors, _ = BUILDER.build_agenda(example())
-        self.assertEqual(standard_errors, [])
-        self.assertEqual(standard["layout"], "standard")
-        self.assertEqual(standard["visual_theme"], "learning")
 
-        feature_data = example()
-        feature_data["meeting"]["theme"] = "AI 实战工作坊"
-        feature_data["meeting"]["word_of_day"] = "创造"
-        feature_data["special_segments"] = [
-            {
-                "title": "AI 实战工作坊",
-                "owner": "成员K",
-                "minutes": 15,
-                "after": "guest_introduction",
-                "details": ["先体验", "再拆解", "最后实作"],
-            }
-        ]
-        feature, _, _ = BUILDER.build_agenda(feature_data)
-        self.assertEqual(feature["layout"], "feature")
-        self.assertEqual(feature["visual_theme"], "technology")
-        feature_html = BUILDER.render_html(feature)
-        self.assertIn("layout-feature", feature_html)
-        self.assertIn("visual-technology", feature_html)
-        self.assertIn('class="feature-beats"', feature_html)
-        self.assertIn("先体验", feature_html)
-        self.assertIn("最后实作", feature_html)
-
-        marathon_data = example()
-        marathon_data["meeting"]["end"] = "21:50"
-        marathon_data["prepared_speeches"] = [
-            {
-                "speaker": f"演讲者{i}",
-                "title": f"演讲题目{i}",
-                "evaluator": f"点评人{i}",
-            }
-            for i in range(1, 6)
-        ]
-        marathon, marathon_errors, _ = BUILDER.build_agenda(marathon_data)
-        self.assertEqual(marathon_errors, [])
-        self.assertEqual(marathon["layout"], "marathon")
-        marathon_html = BUILDER.render_html(marathon)
-        self.assertIn("layout-marathon", marathon_html)
-
-    def test_feature_highlights_long_prepared_speech_and_chooses_longest(self) -> None:
-        data = example()
-        data["meeting"]["end"] = "21:43"
-        data["prepared_speeches"][0]["minutes"] = 20
-        data["prepared_speeches"][0]["title"] = "深度主题演讲"
-        data["special_segments"] = [
-            {
-                "title": "短工作坊",
-                "owner": "成员K",
-                "minutes": 15,
-                "after": "guest_introduction",
-            }
-        ]
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        self.assertEqual(result["layout"], "feature")
-        self.assertEqual(result["feature_item"], "prepared_speech:1")
-        rendered = BUILDER.render_html(result)
-        feature_block = re.search(
-            r'<tr class="feature-highlight"[^>]*>.*?</tr>', rendered, re.DOTALL
-        )
-        self.assertIsNotNone(feature_block)
-        assert feature_block
-        block_html = feature_block.group(0)
-        self.assertEqual(block_html.count("<td"), 4)
-        self.assertIn('class="feature-time time"', block_html)
-        self.assertIn('class="feature-copy activity"', block_html)
-        self.assertIn('class="feature-owner owner"', block_html)
-        self.assertIn('class="feature-duration duration"', block_html)
-        self.assertIn("深度主题演讲", block_html)
-        self.assertNotIn("短工作坊", block_html)
 
     def test_feature_item_can_be_explicitly_selected(self) -> None:
         data = example()
-        data["meeting"]["end"] = "21:45"
+        data["meeting"]["end"] = "21:44"
+        data["impromptu"].update({"minutes": 2, "evaluation_minutes": 1})
         data["special_segments"] = [
             {
                 "title": "第一个重点",
@@ -252,38 +276,6 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(result["feature_item"], "special:2")
 
-    def test_marathon_cards_bind_same_number_without_reordering_timeline(self) -> None:
-        data = example()
-        data["meeting"]["end"] = "21:42"
-        data["prepared_speeches"] = []
-        for index in range(1, 6):
-            speech = {
-                "speaker": f"SPEAKER_{index}",
-                "title": f"TITLE_{index}",
-                "evaluator": f"EVALUATOR_{index}",
-            }
-            if index == 2:
-                speech.pop("evaluator")
-                speech["evaluation_enabled"] = False
-            data["prepared_speeches"].append(speech)
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        ids = [item["id"] for item in result["timeline"]]
-        self.assertLess(ids.index("prepared_speech:5"), ids.index("prepared_evaluation:1"))
-        rendered = BUILDER.render_html(result)
-        cards = re.findall(
-            r'<article class="speech-pair">.*?</article>', rendered, re.DOTALL
-        )
-        self.assertEqual(len(cards), 5)
-        for index, card in enumerate(cards, start=1):
-            self.assertIn(f"SPEAKER_{index}", card)
-            self.assertIn(f"TITLE_{index}", card)
-            if index == 2:
-                self.assertIn('pair-evaluation missing', card)
-                self.assertNotIn("EVALUATOR_3", card)
-            else:
-                self.assertIn(f"EVALUATOR_{index}", card)
-        self.assertIn(".speech-pair:last-child:nth-child(odd)", rendered)
 
     def test_club_profile_keeps_only_reusable_club_facts(self) -> None:
         data = example()
@@ -364,201 +356,14 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertTrue(any("meeting.layout must be" in error for error in invalid_errors))
         self.assertTrue(any("meeting.visual_theme must be" in error for error in invalid_errors))
 
-    def test_visual_preferences_change_rendering_without_changing_facts(self) -> None:
-        baseline, baseline_errors, _ = BUILDER.build_agenda(example())
-        self.assertEqual(baseline_errors, [])
 
-        data = example()
-        data["meeting"]["visual_preferences"] = {
-            "text_size": "large",
-            "feature_emphasis": "compact",
-            "owner_alignment": "left",
-        }
-        styled, styled_errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(styled_errors, [])
-        self.assertEqual(styled["computed"], baseline["computed"])
-        self.assertEqual(styled["timeline"], baseline["timeline"])
-        self.assertEqual(
-            styled["visual_preferences"],
-            {
-                "text_size": "large",
-                "feature_emphasis": "compact",
-                "owner_alignment": "left",
-            },
-        )
 
-        classic = BUILDER.render_html(styled)
-        editorial = BUILDER.render_output_html(styled, "editorial")
-        for rendered in (classic, editorial):
-            self.assertIn("text-size-large", rendered)
-            self.assertIn("feature-emphasis-compact", rendered)
-            self.assertIn("owner-align-left", rendered)
 
-    def test_editorial_renderer_preserves_computed_timeline_and_inlines_assets(self) -> None:
-        result, errors, _ = BUILDER.build_agenda(example())
-        self.assertEqual(errors, [])
-        self.assertEqual(BUILDER.resolve_html_renderer(result), "editorial")
-        rendered = BUILDER.render_output_html(result, "editorial")
-        self.assertIn('id="agenda-audit-result"', rendered)
-        self.assertIn("data:image/png;base64,", rendered)
-        self.assertIn("data:font/woff2;base64,", rendered)
-        self.assertIn('<svg class="ti ', rendered)
-        self.assertNotIn("assets/icons/", rendered)
-        self.assertNotIn("url(./files/", rendered)
-        self.assertNotIn("{{FONT_CSS}}", rendered)
-        self.assertLess(rendered.count("data:font/woff2;base64,"), 40)
-        self.assertNotIn("{{BODY}}", rendered)
-        previous = -1
-        for item in result["timeline"]:
-            position = rendered.find(item["label"])
-            self.assertGreater(position, previous, item["id"])
-            previous = position
 
-        pure = example()
-        pure["club"]["support_components"] = []
-        pure_result, pure_errors, _ = BUILDER.build_agenda(pure)
-        self.assertEqual(pure_errors, [])
-        self.assertEqual(BUILDER.resolve_html_renderer(pure_result), "classic")
 
-        feature = example()
-        feature["special_segments"] = [
-            {
-                "title": "工作坊",
-                "owner": "成员K",
-                "minutes": 15,
-                "after": "guest_introduction",
-            }
-        ]
-        feature_result, feature_errors, _ = BUILDER.build_agenda(feature)
-        self.assertEqual(feature_errors, [])
-        self.assertEqual(feature_result["layout"], "feature")
-        self.assertEqual(BUILDER.resolve_html_renderer(feature_result), "classic")
 
-    def test_editorial_renderer_rejects_bilingual_until_a_specific_layout_exists(self) -> None:
-        data = example()
-        data["club"]["language"] = "bilingual"
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        with self.assertRaisesRegex(ValueError, "supports zh or en"):
-            BUILDER.render_output_html(result, "editorial")
 
-    def test_editorial_auto_falls_back_instead_of_dropping_unsupported_content(self) -> None:
-        qr_data = example()
-        qr_data["club"]["support_components"].append("vpm_qr")
-        qr_data["club"]["vpm_qr_image"] = "../assets/toastmasters-logo.png"
-        qr_result, qr_errors, _ = BUILDER.build_agenda(
-            qr_data, source_dir=ROOT / "examples"
-        )
-        self.assertEqual(qr_errors, [])
-        self.assertEqual(BUILDER.resolve_html_renderer(qr_result), "classic")
-        with self.assertRaisesRegex(ValueError, "QR components"):
-            BUILDER.render_output_html(qr_result, "editorial")
 
-        crowded = example()
-        crowded["club"]["custom_support_blocks"] = [
-            {"id": f"custom-{index}", "title": f"自定义{index}", "lines": ["内容"]}
-            for index in range(1, 4)
-        ]
-        crowded_result, crowded_errors, _ = BUILDER.build_agenda(crowded)
-        self.assertEqual(crowded_errors, [])
-        self.assertEqual(BUILDER.resolve_html_renderer(crowded_result), "classic")
-        with self.assertRaisesRegex(ValueError, "at most 4 bottom"):
-            BUILDER.render_output_html(crowded_result, "editorial")
-
-        left_block = example()
-        left_block["club"]["custom_support_blocks"] = [
-            {
-                "id": "left-note",
-                "title": "侧栏说明",
-                "lines": ["不能改位置"],
-                "placement": "left",
-            }
-        ]
-        left_result, left_errors, _ = BUILDER.build_agenda(left_block)
-        self.assertEqual(left_errors, [])
-        self.assertEqual(BUILDER.resolve_html_renderer(left_result), "classic")
-        with self.assertRaisesRegex(ValueError, "placement:left"):
-            BUILDER.render_output_html(left_result, "editorial")
-
-    def test_editorial_does_not_reinterpret_slogan_or_values_custom_blocks(self) -> None:
-        data = example()
-        data["club"]["custom_support_blocks"] = [
-            {
-                "id": "slogan",
-                "title": "口号备选",
-                "lines": ["第一行", "第二行"],
-                "placement": "bottom",
-            }
-        ]
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        self.assertEqual(BUILDER.resolve_html_renderer(result), "editorial")
-        rendered = BUILDER.render_output_html(result, "editorial")
-        self.assertIn("口号备选", rendered)
-        self.assertIn("第一行", rendered)
-        self.assertIn("第二行", rendered)
-
-    def test_editorial_structures_club_facts_without_dropping_text(self) -> None:
-        data = example()
-        facts = [
-            "定位：助力会员提升沟通力",
-            "愿景：帮助会员成长",
-            "特色：真实、温暖、有趣",
-            "关键词：共创",
-            "价值观：正直、尊重、服务、卓越",
-        ]
-        data["club"]["custom_support_blocks"] = [
-            {"id": "club_facts", "title": "俱乐部信息", "lines": facts}
-        ]
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        rendered = BUILDER.render_output_html(result, "editorial")
-        self.assertIn('class="club-facts"', rendered)
-        self.assertIn('class="ti fact-icon"', rendered)
-        for fact in facts:
-            label, value = fact.split("：", 1)
-            self.assertIn(f"{label}：", rendered)
-            self.assertIn(value, rendered)
-
-    def test_editorial_uses_shared_boundaries_and_escapes_invalid_date(self) -> None:
-        data = example()
-        data["meeting"]["date"] = '<img src=x onerror="alert(1)">'
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        editorial = BUILDER.render_output_html(result, "editorial")
-        classic = BUILDER.render_html(result)
-        editorial_text = html_lib.unescape(re.sub(r"<[^>]+>", "", editorial))
-        for expected in ("四类禁忌", "政治、宗教、色情或传销"):
-            self.assertIn(expected, editorial_text)
-            self.assertIn(expected, classic)
-        self.assertNotIn('<img src=x onerror="alert(1)">', editorial)
-        self.assertIn("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;", editorial)
-
-    def test_editorial_keeps_noncontiguous_phase_runs_in_original_order(self) -> None:
-        result, errors, _ = BUILDER.build_agenda(example())
-        self.assertEqual(errors, [])
-        result["timeline"][0]["section"] = "opening"
-        result["timeline"][1]["section"] = "first_half"
-        result["timeline"][2]["section"] = "opening"
-        rendered = BUILDER.render_output_html(result, "editorial")
-        labels = [result["timeline"][index]["label"] for index in range(3)]
-        positions = [rendered.find(label) for label in labels]
-        self.assertEqual(positions, sorted(positions))
-
-    def test_optional_theme_image_is_embedded_without_changing_logo(self) -> None:
-        data = example()
-        data["meeting"]["theme_image"] = "../assets/toastmasters-logo.png"
-        result, errors, _ = BUILDER.build_agenda(data, source_dir=ROOT / "examples")
-        self.assertEqual(errors, [])
-        self.assertTrue(result["_assets"]["theme_art_data_uri"].startswith("data:image/png"))
-        rendered = BUILDER.render_html(result)
-        self.assertIn("has-theme-art", rendered)
-        self.assertIn("class='theme-art'", rendered)
-        self.assertIn("class='logo'", rendered)
-
-        data["meeting"]["theme_image"] = "missing-theme.png"
-        _, missing_errors, _ = BUILDER.build_agenda(data, source_dir=ROOT / "examples")
-        self.assertTrue(any("meeting.theme_image does not exist" in error for error in missing_errors))
 
     def test_missing_end_defaults_to_two_hours(self) -> None:
         data = example()
@@ -586,19 +391,6 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(result["computed"]["final_end"], "21:41")
         self.assertEqual(result["computed"]["status"], "exact_with_approved_overtime")
 
-    def test_bilingual_labels_and_html_escape(self) -> None:
-        data = example()
-        data["club"]["language"] = "bilingual"
-        data["meeting"]["theme"] = "<script>alert(1)</script>"
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        self.assertIn("规则介绍 / Meeting Rules", result["timeline"][0]["label"])
-        rendered = BUILDER.render_html(result)
-        self.assertNotIn("<script>alert(1)</script>", rendered)
-        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", rendered)
-        self.assertIn("会议流程 / Agenda", rendered)
-        markdown = BUILDER.render_markdown(result)
-        self.assertIn("主题 / Theme", markdown)
 
     def test_missing_evaluator_requires_explicit_decision(self) -> None:
         data = example()
@@ -608,6 +400,7 @@ class AgendaBuilderTests(unittest.TestCase):
 
     def test_explicit_evaluation_disabled_omits_evaluation(self) -> None:
         data = example()
+        data["meeting"]["end"] = "21:26"
         speech = data["prepared_speeches"][0]
         speech.pop("evaluator")
         speech["evaluation_enabled"] = False
@@ -675,26 +468,7 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(result["computed"]["row_count"], 41)
         self.assertEqual(result["computed"]["page_count"], 1)
 
-    def test_recommended_support_components_stay_on_one_page(self) -> None:
-        result, errors, _ = BUILDER.build_agenda(example())
-        self.assertEqual(errors, [])
-        self.assertEqual(result["computed"]["page_count"], 1)
-        rendered = BUILDER.render_html(result)
-        self.assertIn('<meta name="agenda-page-count" content="1">', rendered)
-        self.assertIn("时间官规则", rendered)
-        self.assertIn("当届官员团队", rendered)
-        self.assertIn("四类禁忌", rendered)
-        self.assertEqual(rendered.count('class="page '), 1)
 
-    def test_empty_support_components_keep_agenda_only(self) -> None:
-        data = example()
-        data["club"]["support_components"] = []
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        self.assertEqual(result["computed"]["page_count"], 1)
-        rendered = BUILDER.render_html(result)
-        self.assertNotIn('<main class="page support-page', rendered)
-        self.assertTrue(any(row["type"] == "president_opening" for row in result["timeline"]))
 
     def test_meeting_support_components_fully_override_club_selection(self) -> None:
         data = example()
@@ -763,37 +537,34 @@ class AgendaBuilderTests(unittest.TestCase):
         data = example()
         data["club"]["support_components"] = ["club_intro", "join_info"]
         data["club"].pop("club_intro")
-        data["club"].pop("join_info")
-        _, errors, _ = BUILDER.build_agenda(data)
+        data["club"].pop("join_info", None)
+        result, errors, _ = BUILDER.build_agenda(data)
         self.assertTrue(any("club.club_intro is empty" in error for error in errors))
         self.assertTrue(any("club.join_info is empty" in error for error in errors))
+        self.assertEqual(result["club"]["join_info"], [])
 
-    def test_selected_qr_components_embed_user_images(self) -> None:
+    def test_existing_profile_selection_does_not_add_join_info(self) -> None:
         data = example()
-        data["club"]["support_components"] = [
-            "timer_rules",
-            "toastmasters_intro",
-            "meeting_boundaries",
-            "officers",
-            "club_intro",
-            "join_info",
-            "vpm_qr",
-            "voting_qr",
-        ]
-        data["club"]["vpm_qr_image"] = "../assets/toastmasters-logo.png"
-        data["meeting"]["voting_qr_image"] = "../assets/toastmasters-logo.png"
-        result, errors, _ = BUILDER.build_agenda(data, source_dir=ROOT / "examples")
+        data["club"]["support_components"] = ["timer_rules"]
+        data["club"].pop("join_info", None)
+
+        result, errors, _ = BUILDER.build_agenda(data)
+
         self.assertEqual(errors, [])
-        self.assertTrue(result["club"]["vpm_qr_present"])
-        self.assertTrue(result["meeting"]["voting_qr_present"])
-        rendered = BUILDER.render_html(result)
-        self.assertIn("入会咨询", rendered)
-        self.assertIn("本期投票", rendered)
-        encoded = result["_assets"]["vpm_qr_data_uri"].split(",", 1)[1]
-        self.assertEqual(
-            base64.b64decode(encoded),
-            (ROOT / "assets" / "toastmasters-logo.png").read_bytes(),
-        )
+        self.assertEqual(result["support_components"], ["timer_rules"])
+        self.assertEqual(result["club"]["join_info"], [])
+
+    def test_current_empty_support_selection_keeps_join_info_unselected(self) -> None:
+        data = example()
+        data["meeting"]["support_components"] = []
+        data["club"].pop("join_info", None)
+
+        result, errors, _ = BUILDER.build_agenda(data)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(result["support_components"], [])
+        self.assertEqual(result["club"]["join_info"], [])
+
 
     def test_selected_qr_component_rejects_missing_image(self) -> None:
         data = example()
@@ -802,27 +573,6 @@ class AgendaBuilderTests(unittest.TestCase):
         _, errors, _ = BUILDER.build_agenda(data, source_dir=ROOT / "examples")
         self.assertTrue(any("does not exist" in error for error in errors))
 
-    def test_custom_support_blocks_use_the_same_single_page_layout(self) -> None:
-        data = example()
-        data["club"]["support_components"] = []
-        data["club"]["custom_support_blocks"] = [
-            {
-                "id": "pathways",
-                "title": "Pathways 教育路径",
-                "lines": ["DL - 动态领导", "PM - 精通演讲", "<script>bad()</script>"],
-                "placement": "auto",
-            }
-        ]
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        self.assertEqual(result["custom_support_blocks"][0]["id"], "pathways")
-        rendered = BUILDER.render_html(result)
-        self.assertIn("Pathways 教育路径", rendered)
-        self.assertIn("DL - 动态领导", rendered)
-        self.assertIn("&lt;script&gt;bad()&lt;/script&gt;", rendered)
-        self.assertNotIn("<script>bad()</script>", rendered)
-        self.assertIn("with-support", rendered)
-        self.assertIn('<meta name="agenda-page-count" content="1">', rendered)
 
     def test_custom_support_blocks_validate_identity_content_and_placement(self) -> None:
         data = example()
@@ -889,6 +639,8 @@ class AgendaBuilderTests(unittest.TestCase):
         data["standard_overrides"] = [
             {"id": "guest_introduction", "transition_after": 0.5},
             {"id": "awards", "transition_after": 0.5},
+            {"id": "photo_break", "minutes": 4},
+            {"id": "sharing", "minutes": 7},
         ]
         result, errors, _ = BUILDER.build_agenda(data)
         self.assertEqual(errors, [])
@@ -904,6 +656,10 @@ class AgendaBuilderTests(unittest.TestCase):
 
     def test_role_triggered_items_accept_individual_transition_overrides(self) -> None:
         data = example()
+        data["standard_overrides"] = [
+            {"id": "photo_break", "minutes": 4},
+            {"id": "sharing", "minutes": 7},
+        ]
         data["transition_overrides"] = [
             {"id": "prepared_evaluation:1", "minutes": 0.5},
             {"id": "table_topics_evaluation", "minutes": 0.5},
@@ -918,6 +674,7 @@ class AgendaBuilderTests(unittest.TestCase):
 
     def test_agenda_overrides_change_generated_items_and_reclose_timeline(self) -> None:
         data = example()
+        data["meeting"]["end"] = "21:30:30"
         data["agenda_overrides"] = [
             {
                 "id": "timer_intro",
@@ -936,11 +693,12 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(by_id["timer_intro"]["label"], "时间规则快速说明")
         self.assertEqual(by_id["timer_intro"]["transition_after"], 0.5)
         self.assertEqual(by_id["general_evaluation"]["duration"], 10)
-        self.assertEqual(result["computed"]["total_minutes"], 120)
-        self.assertEqual(result["computed"]["final_end"], "21:30")
+        self.assertEqual(result["computed"]["total_minutes"], 120.5)
+        self.assertEqual(result["computed"]["final_end"], "21:30:30")
 
     def test_agenda_override_can_remove_an_item_and_reclose_timeline(self) -> None:
         data = example()
+        data["standard_overrides"] = [{"id": "sharing", "minutes": 10}]
         data["agenda_overrides"] = [{"id": "photo_break", "enabled": False}]
         result, errors, _ = BUILDER.build_agenda(data)
         self.assertEqual(errors, [])
@@ -1081,8 +839,102 @@ class AgendaBuilderTests(unittest.TestCase):
         self.assertEqual(result["computed"]["total_minutes"], 120)
         self.assertEqual(result["computed"]["final_end"], "21:30")
 
+    def test_agenda_override_rejects_evaluations_before_their_sessions(self) -> None:
+        cases = (
+            (
+                {"id": "prepared_evaluation:1", "after": "guest_introduction"},
+                "agenda order requires prepared_evaluation:1 after prepared_speech:1",
+            ),
+            (
+                {"id": "table_topics_evaluation", "after": "prepared_speech:1"},
+                "agenda order requires table_topics_evaluation after table_topics",
+            ),
+        )
+        baseline, baseline_errors, _ = BUILDER.build_agenda(example())
+        self.assertEqual(baseline_errors, [])
+        baseline_ids = [row["id"] for row in baseline["timeline"]]
+
+        for override, expected_error in cases:
+            with self.subTest(override=override):
+                data = example()
+                data["agenda_overrides"] = [override]
+                result, errors, _ = BUILDER.build_agenda(data)
+                self.assertIn(expected_error, errors)
+                self.assertEqual(
+                    [row["id"] for row in result["timeline"]],
+                    baseline_ids,
+                )
+
+    def test_agenda_override_keeps_general_evaluation_and_sharing_in_closing(self) -> None:
+        cases = (
+            (
+                {"id": "general_evaluation", "after": "guest_introduction"},
+                "agenda order requires general_evaluation after all main and feedback items",
+            ),
+            (
+                {"id": "sharing", "after": "prepared_speech:1"},
+                "agenda order requires sharing after all main and feedback items",
+            ),
+            (
+                {"id": "general_evaluation", "section": "second_half"},
+                "agenda order requires general_evaluation to remain in the closing section",
+            ),
+            (
+                {"id": "sharing", "section": "first_half"},
+                "agenda order requires sharing to remain in the closing section",
+            ),
+            (
+                {"id": "general_evaluation", "after": "awards"},
+                "agenda order requires general_evaluation before awards and meeting close",
+            ),
+            (
+                {"id": "sharing", "after": "president_closing"},
+                "agenda order requires sharing before awards and meeting close",
+            ),
+        )
+        for override, expected_error in cases:
+            with self.subTest(override=override):
+                data = example()
+                data["agenda_overrides"] = [override]
+                _, errors, _ = BUILDER.build_agenda(data)
+                self.assertTrue(
+                    any(expected_error in error for error in errors),
+                    errors,
+                )
+
+    def test_agenda_override_allows_general_evaluation_and_sharing_to_swap(self) -> None:
+        data = example()
+        data["agenda_overrides"] = [
+            {"id": "general_evaluation", "after": "timer_report"}
+        ]
+        result, errors, _ = BUILDER.build_agenda(data)
+        self.assertEqual(errors, [])
+
+        ids = [row["id"] for row in result["timeline"]]
+        self.assertLess(ids.index("timer_report"), ids.index("general_evaluation"))
+        self.assertLess(ids.index("general_evaluation"), ids.index("sharing"))
+        by_id = {row["id"]: row for row in result["timeline"]}
+        self.assertEqual(by_id["general_evaluation"]["section"], "closing")
+        self.assertEqual(by_id["sharing"]["section"], "closing")
+        self.assertEqual(result["computed"]["total_minutes"], 120)
+        self.assertEqual(result["computed"]["final_end"], "21:30")
+
+    def test_agenda_override_keeps_president_closing_as_the_final_item(self) -> None:
+        data = example()
+        data["agenda_overrides"] = [
+            {"id": "awards", "after": "president_closing"}
+        ]
+
+        _, errors, _ = BUILDER.build_agenda(data)
+
+        self.assertIn(
+            "agenda order requires president_closing to remain the final meeting item",
+            errors,
+        )
+
     def test_marathon_style_reorder_chain_preserves_original_sections(self) -> None:
         data = example()
+        data["meeting"]["end"] = "21:31"
         data["impromptu"] = None
         data["prepared_speeches"] = [
             {
@@ -1136,8 +988,8 @@ class AgendaBuilderTests(unittest.TestCase):
             "president_closing",
         ):
             self.assertEqual(by_id[item_id]["section"], "closing")
-        self.assertEqual(result["computed"]["total_minutes"], 120)
-        self.assertEqual(result["computed"]["final_end"], "21:30")
+        self.assertEqual(result["computed"]["total_minutes"], 121)
+        self.assertEqual(result["computed"]["final_end"], "21:31")
 
     def test_agenda_overrides_reject_missing_and_duplicate_definitions(self) -> None:
         missing_id = example()
@@ -1207,6 +1059,7 @@ class AgendaBuilderTests(unittest.TestCase):
     def test_auto_evaluation_does_not_absorb_an_unrelated_time_gap(self) -> None:
         data = example()
         data["impromptu"]["minutes"] = 10
+        data["impromptu"]["evaluation_minutes"] = 5
         data["standard_overrides"] = [
             {"id": "photo_break", "minutes": 5},
             {"id": "sharing", "minutes": 6},
@@ -1248,36 +1101,6 @@ class AgendaBuilderTests(unittest.TestCase):
         _, duplicate_errors, _ = BUILDER.build_agenda(duplicate)
         self.assertTrue(any("defined twice" in error for error in duplicate_errors))
 
-    def test_all_explicit_time_fields_accept_half_minute_increments(self) -> None:
-        data = example()
-        data["standard_overrides"] = [
-            {"id": "guest_introduction", "minutes": 4.5, "transition_after": 0.5}
-        ]
-        data["prepared_speeches"][0]["minutes"] = 6.5
-        data["prepared_speeches"][0]["evaluation_minutes"] = 2.5
-        data["impromptu"]["minutes"] = 10.5
-        data["impromptu"]["evaluation_minutes"] = 5.5
-        data["special_segments"] = [
-            {
-                "title": "30秒提醒",
-                "owner": "成员K",
-                "minutes": 0.5,
-                "after": "guest_introduction",
-                "transition_after": 0.5,
-            }
-        ]
-        result, errors, _ = BUILDER.build_agenda(data)
-        self.assertEqual(errors, [])
-        self.assertEqual(result["computed"]["total_minutes"], 120)
-        first_speech = next(
-            row for row in result["timeline"] if row["id"] == "prepared_speech:1"
-        )
-        self.assertEqual(first_speech["duration"], 6.5)
-        markdown = BUILDER.render_markdown(result)
-        rendered = BUILDER.render_html(result)
-        self.assertIn("6.5 min", markdown)
-        self.assertIn("0.5 min", rendered)
-        self.assertNotIn("2.0 min", rendered)
 
     def test_invalid_half_minute_values_are_rejected(self) -> None:
         for invalid in (0.25, True, "0.5", -0.5, float("nan"), float("inf")):

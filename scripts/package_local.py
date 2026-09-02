@@ -32,6 +32,7 @@ RUNTIME_FILES = (
     "assets/fonts/noto-sans-sc/index.css",
 )
 FONT_GLOB = "assets/fonts/noto-sans-sc/files/*.woff2"
+PROFILE_GLOB = "profiles/*.json"
 
 TEXT_SUFFIXES = {
     ".css",
@@ -79,6 +80,9 @@ def runtime_sources() -> list[tuple[Path, Path]]:
     font_root = SKILL_ROOT / "assets" / "fonts" / "noto-sans-sc" / "files"
     relative_paths.extend(
         path.relative_to(SKILL_ROOT) for path in sorted(font_root.glob("*.woff2"))
+    )
+    relative_paths.extend(
+        path.relative_to(SKILL_ROOT) for path in sorted(SKILL_ROOT.glob(PROFILE_GLOB))
     )
     return [(SKILL_ROOT / relative, relative) for relative in relative_paths]
 

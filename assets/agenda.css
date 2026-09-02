@@ -134,12 +134,16 @@ body {
 }
 
 .agenda-page[data-density="compact"] .support-area {
-  margin-top: 1.45mm;
+  margin-top: 0.7mm;
 }
 
 .agenda-page[data-density="compact"] .support-grid,
 .agenda-page[data-density="compact"] .support-group {
-  gap: 1.65mm;
+  gap: 1.2mm;
+}
+
+.agenda-page[data-density="compact"] .support-grid {
+  gap: 0.8mm;
 }
 
 .agenda-page[data-density="compact"] .support-card {
@@ -616,6 +620,24 @@ body {
 
 .support-card li::marker {
   color: var(--maroon);
+}
+
+/* Default joining guidance is intentionally one compact, full-width line.
+   This preserves the information without taking a third support row away
+   from a dense but otherwise valid agenda. */
+.support-card.component-join_info.span-4 {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 2.4mm;
+  align-items: baseline;
+}
+
+.support-card.component-join_info.span-4 h3 {
+  margin-bottom: 0;
+}
+
+.support-card.component-join_info.span-4 ul {
+  min-width: 0;
 }
 
 .support-image {

@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="9" flood-color="#173746" flood-opacity="0.10"/></filter>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto"><path d="M0 0L11 5.5L0 11Z" fill="#C89B2B"/></marker>
+    <marker id="blueArrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto"><path d="M0 0L11 5.5L0 11Z" fill="#3D738C"/></marker>
+    <style>
+      .title{font:800 40px 'PingFang SC','Noto Sans SC',sans-serif;fill:#073B57}.sub{font:500 19px 'PingFang SC','Noto Sans SC',sans-serif;fill:#677984}
+      .band{font:750 19px 'PingFang SC','Noto Sans SC',sans-serif;fill:#772432;letter-spacing:.6px}.h{font:750 21px 'PingFang SC','Noto Sans SC',sans-serif;fill:#073B57}.p{font:500 16px 'PingFang SC','Noto Sans SC',sans-serif;fill:#536670}.mini{font:500 14px 'PingFang SC','Noto Sans SC',sans-serif;fill:#6E7E86}
+      .whiteh{font:750 20px 'PingFang SC','Noto Sans SC',sans-serif;fill:white}.whitep{font:500 15px 'PingFang SC','Noto Sans SC',sans-serif;fill:#D8E7ED}
+      .arrow{stroke:#C89B2B;stroke-width:3.5;fill:none;marker-end:url(#arrow)}.blue{stroke:#3D738C;stroke-width:3;fill:none;marker-end:url(#blueArrow)}.dash{stroke:#8EA4AE;stroke-width:2.5;stroke-dasharray:8 7;fill:none;marker-end:url(#blueArrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="1000" fill="#F7F5F0"/>
+  <rect x="0" y="0" width="980" height="10" fill="#004165"/><rect x="980" y="0" width="275" height="10" fill="#D5AA32"/><rect x="1255" y="0" width="345" height="10" fill="#772432"/>
+  <text x="62" y="66" class="title">Felix Toastmasters Agenda｜运行流程</text>
+  <text x="62" y="102" class="sub">Agent 负责理解与沟通，程序保证事实和时间，单一排版器负责 A4，Profile 负责下次少问</text>
+
+  <rect x="45" y="132" width="1510" height="625" rx="25" fill="#FFFFFF" stroke="#AFC2CA" stroke-width="2" stroke-dasharray="10 8"/>
+  <text x="70" y="168" class="band">统一运行包｜Codex、WorkBuddy、豆包使用同一份</text>
+
+  <g filter="url(#shadow)">
+    <rect x="75" y="205" width="225" height="135" rx="20" fill="#FFF8E8" stroke="#DEC477"/>
+    <text x="98" y="244" class="h">用户输入</text><text x="98" y="278" class="p"><tspan x="98">角色接龙</tspan><tspan x="98" dy="24">本期变化与自然语言反馈</tspan></text>
+
+    <rect x="350" y="205" width="245" height="135" rx="20" fill="#EAF2F5" stroke="#AFC5CE"/>
+    <text x="373" y="244" class="h">SKILL.md + Agent</text><text x="373" y="278" class="p"><tspan x="373">多轮沟通、识别缺项</tspan><tspan x="373" dy="24">过滤默认不展示的宣传文案</tspan></text>
+
+    <rect x="645" y="205" width="210" height="135" rx="20" fill="#F8F1F2" stroke="#D8B6BD"/>
+    <text x="668" y="244" class="h">meeting.json</text><text x="668" y="278" class="p"><tspan x="668">只保存本期事实</tspan><tspan x="668" dy="24">用户不接触内部 JSON</tspan></text>
+
+    <rect x="905" y="205" width="245" height="135" rx="20" fill="#004165" stroke="#004165"/>
+    <text x="928" y="244" class="whiteh">confirm｜内容确认</text><text x="928" y="278" class="whitep"><tspan x="928">输入校验 + Profile 合并</tspan><tspan x="928" dy="24">流程组装 + 时间闭合</tspan></text>
+
+    <rect x="1200" y="205" width="285" height="135" rx="20" fill="#F2F7F9" stroke="#AFC5CE"/>
+    <text x="1223" y="244" class="h">完整文字确认稿</text><text x="1223" y="278" class="p"><tspan x="1223">agenda.md + 计算事实</tspan><tspan x="1223" dy="24">内容编号 facts_sha256</tspan></text>
+  </g>
+  <path d="M305 272H342" class="arrow"/><path d="M600 272H637" class="arrow"/><path d="M860 272H897" class="arrow"/><path d="M1155 272H1192" class="arrow"/>
+
+  <g filter="url(#shadow)">
+    <path d="M100 455 Q100 420 215 420 Q330 420 330 455V570Q330 605 215 605Q100 605 100 570Z" fill="#FFF3D5" stroke="#D5AA32" stroke-width="2"/>
+    <ellipse cx="215" cy="455" rx="115" ry="35" fill="#F7D980" stroke="#D5AA32" stroke-width="2"/>
+    <text x="120" y="460" class="h">内置＋本地 Profile</text>
+    <text x="128" y="507" class="p"><tspan x="128">公开资料随 Skill 安装</tspan><tspan x="128" dy="23">本地资料优先覆盖</tspan><tspan x="128" dy="23">本期事实始终优先</tspan></text>
+
+    <rect x="420" y="430" width="245" height="145" rx="20" fill="#F8F1F2" stroke="#D8B6BD"/>
+    <text x="443" y="470" class="h">用户确认全部文字</text><text x="443" y="505" class="p"><tspan x="443">内容有变化：回到 confirm</tspan><tspan x="443" dy="24">确认后：携带内容编号生图</tspan></text>
+
+    <rect x="715" y="430" width="220" height="145" rx="20" fill="#004165" stroke="#004165"/>
+    <text x="738" y="470" class="whiteh">image｜生图</text><text x="738" y="505" class="whitep"><tspan x="738">核对内容编号</tspan><tspan x="738" dy="24">不再重算文字</tspan></text>
+
+    <rect x="985" y="430" width="225" height="145" rx="20" fill="#EAF2F5" stroke="#AFC5CE"/>
+    <text x="1008" y="470" class="h">单一 Renderer</text><text x="1008" y="505" class="p"><tspan x="1008">统一 CSS、官方 Logo</tspan><tspan x="1008" dy="24">离线字体</tspan></text>
+
+    <rect x="1260" y="430" width="225" height="145" rx="20" fill="#EEF6F1" stroke="#B7D0BF"/>
+    <text x="1283" y="470" class="h">Chrome A4 检查</text><text x="1283" y="505" class="p"><tspan x="1283">一页、字体、裁切、隐藏</tspan><tspan x="1283" dy="24">生成预览 PNG / PDF</tspan></text>
+  </g>
+  <path d="M1338 347V385H542V422" class="dash"/>
+  <path d="M215 420V370H1027V348" class="blue"/><text x="520" y="360" class="mini">自动补充长期资料，再由本期事实覆盖</text>
+  <path d="M670 502H707" class="arrow"/><path d="M940 502H977" class="arrow"/><path d="M1215 502H1252" class="arrow"/>
+
+  <g filter="url(#shadow)">
+    <rect x="420" y="635" width="300" height="82" rx="18" fill="#F2F7F9" stroke="#AFC5CE"/>
+    <text x="443" y="670" class="h">用户自然语言修改</text><text x="443" y="698" class="p">内容回到 confirm；纯视觉回到 image</text>
+    <rect x="780" y="635" width="300" height="82" rx="18" fill="#772432" stroke="#772432"/>
+    <text x="803" y="670" class="whiteh">final｜原样交付</text><text x="803" y="698" class="whitep">不重算、不重排，复制已看版本</text>
+    <rect x="1140" y="635" width="345" height="82" rx="18" fill="#FFF8E8" stroke="#DEC477"/>
+    <text x="1163" y="670" class="h">交付给用户：PDF / PNG</text><text x="1163" y="698" class="p">可直接使用，预览与最终内容一致</text>
+  </g>
+  <path d="M1370 580V625H1088" class="arrow"/><path d="M1085 676H1132" class="arrow"/>
+  <path d="M770 676H728" class="dash"/>
+
+  <rect x="45" y="792" width="1010" height="155" rx="22" fill="#EEF2F3" stroke="#CAD5D9"/>
+  <text x="70" y="827" class="band">Git 源码仓库中保留，但不进入运行包</text>
+  <text x="70" y="865" class="h">README　输入合同　架构文档与图　匿名完整示例　当前测试　打包脚本</text>
+  <text x="70" y="903" class="p">用于维护、教学、公开检查和回归；普通会单任务不会读取这些内容。</text>
+
+  <rect x="1095" y="792" width="460" height="155" rx="22" fill="#FFF4F5" stroke="#D8B6BD"/>
+  <text x="1120" y="827" class="band">Git 与运行包之外</text>
+  <text x="1120" y="865" class="h">私有 Profile　独立验证集　历史版本</text>
+  <text x="1120" y="903" class="p">未授权公开的资料留在本地，避免日常 Agent 读取维护噪音。</text>
+
+  <text x="800" y="980" class="mini" text-anchor="middle">运行复杂度放进程序；用户只经历沟通、文字确认、看图和交付。</text>
+</svg>

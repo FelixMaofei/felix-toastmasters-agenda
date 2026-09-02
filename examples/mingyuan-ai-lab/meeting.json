@@ -1,0 +1,46 @@
+{
+  "simple_version": 1,
+  "club": {"name": "明源云AI Lab头马俱乐部", "language": "zh"},
+  "meeting": {
+    "number": "245",
+    "date": "2026-09-09",
+    "start": "19:30",
+    "end": "21:30",
+    "location": "金地威新中心洱海会议室",
+    "theme": "持续突破",
+    "word_of_day": "笃行",
+    "manager": "示例成员甲",
+    "president": "示例成员乙"
+  },
+  "roles": [
+    {"role": "事务官", "person": "示例成员丙"},
+    {"role": "总主持", "person": "示例成员甲"},
+    {"role": "时间官", "person": "示例成员丁"},
+    {"role": "哼哈官", "person": "示例成员戊"},
+    {"role": "语法官", "person": "示例成员己"},
+    {"role": "嘉宾介绍", "person": "示例成员庚"},
+    {"role": "真情分享", "person": "示例成员丙"},
+    {"role": "总点评", "person": "示例成员乙"},
+    {"role": "颁奖主持", "person": "示例成员庚"}
+  ],
+  "speeches": [
+    {"speaker": "示例演讲者一", "title": "第一步", "evaluator": "示例点评者一"},
+    {"speaker": "示例演讲者二", "title": "看见", "evaluator": "示例点评者二"}
+  ],
+  "impromptu": {
+    "host": "示例成员辛",
+    "minutes": 15,
+    "evaluator": "示例成员壬",
+    "evaluation_minutes": 7
+  },
+  "backstage": [
+    {"role": "拍照", "person": "示例成员癸"},
+    {"role": "场控/PPT", "person": "示例成员一"},
+    {"role": "投票", "person": "示例成员二"}
+  ],
+  "special": [],
+  "agenda_overrides": [
+    {"id": "photo_break", "minutes": 10},
+    {"id": "sharing", "minutes": 11}
+  ]
+}

@@ -45,7 +45,7 @@ class LocalPackageTests(unittest.TestCase):
             self.assertTrue(zip_path.is_file())
             self.assertEqual(
                 {path.name for path in package_dir.iterdir()},
-                {"SKILL.md", "SHA256SUMS", "agents", "assets", "scripts"},
+                {"SKILL.md", "SHA256SUMS", "agents", "assets", "profiles", "scripts"},
             )
             self.assertEqual(
                 {path.name for path in (package_dir / "scripts").iterdir()},
@@ -69,9 +69,15 @@ class LocalPackageTests(unittest.TestCase):
             self.assertFalse((package_dir / "assets" / "layouts").exists())
             self.assertFalse((package_dir / "assets" / "themes").exists())
             self.assertFalse((package_dir / "assets" / "icons").exists())
+            bundled_profiles = list((package_dir / "profiles").glob("*.json"))
+            self.assertEqual(len(bundled_profiles), 1)
+            profile = json.loads(bundled_profiles[0].read_text(encoding="utf-8"))
+            self.assertEqual(
+                profile["club"]["name"], "明源云AI Lab头马俱乐部"
+            )
 
             skill_text = (package_dir / "SKILL.md").read_text(encoding="utf-8")
-            self.assertIn('"simple_version": 1', skill_text)
+            self.assertIn("simple_version: 1", skill_text)
             self.assertNotIn("references/", skill_text)
             self.assertNotIn("input-contract.md", skill_text)
             for excluded_reference in (
@@ -193,9 +199,18 @@ class LocalPackageTests(unittest.TestCase):
                                 "evaluator": "成员己",
                             },
                         ],
-                        "impromptu": {"host": "成员壬", "evaluator": "成员乙"},
+                        "impromptu": {
+                            "host": "成员壬",
+                            "minutes": 14,
+                            "evaluator": "成员乙",
+                            "evaluation_minutes": 7,
+                        },
                         "backstage": [{"role": "摄影官", "person": "成员癸"}],
                         "special": [],
+                        "agenda_overrides": [
+                            {"id": "photo_break", "minutes": 4},
+                            {"id": "sharing", "minutes": 6},
+                        ],
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -204,11 +219,11 @@ class LocalPackageTests(unittest.TestCase):
                 encoding="utf-8",
             )
             agenda_output = output_root / "agenda-output"
-            first_result = subprocess.run(
+            confirm_result = subprocess.run(
                 [
                     sys.executable,
                     str(extracted_package / "scripts" / "run_agenda.py"),
-                    "first",
+                    "confirm",
                     str(meeting_path),
                     "--output-dir",
                     str(agenda_output),
@@ -218,9 +233,32 @@ class LocalPackageTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(first_result.returncode, 0, first_result.stderr)
-            first_payload = json.loads(first_result.stdout)
-            self.assertEqual(first_payload["stage"], "preview_ready")
+            self.assertEqual(confirm_result.returncode, 0, confirm_result.stderr)
+            confirm_payload = json.loads(confirm_result.stdout)
+            self.assertEqual(
+                confirm_payload["stage"], "text_confirmation_ready"
+            )
+            self.assertFalse((agenda_output / "agenda.preview.png").exists())
+
+            image_result = subprocess.run(
+                [
+                    sys.executable,
+                    str(extracted_package / "scripts" / "run_agenda.py"),
+                    "image",
+                    str(agenda_output / "agenda.computed.json"),
+                    "--confirmed-sha256",
+                    confirm_payload["facts_sha256"],
+                    "--output-dir",
+                    str(agenda_output),
+                ],
+                cwd=output_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(image_result.returncode, 0, image_result.stderr)
+            image_payload = json.loads(image_result.stdout)
+            self.assertEqual(image_payload["stage"], "preview_ready")
 
             preview_html = agenda_output / "agenda.preview.html"
             preview_pdf = agenda_output / "agenda.preview.pdf"

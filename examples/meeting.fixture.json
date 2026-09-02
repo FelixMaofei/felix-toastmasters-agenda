@@ -21,9 +21,6 @@
     ],
     "club_intro": [
       "一个通过持续练习和互相反馈，提升表达与领导力的成长社群。"
-    ],
-    "join_info": [
-      "欢迎先参加例会体验，再联系会员副会长了解入会方式。"
     ]
   },
   "meeting": {
@@ -55,7 +52,9 @@
   ],
   "impromptu": {
     "host": "成员H",
-    "evaluator": "成员B"
+    "minutes": 14,
+    "evaluator": "成员B",
+    "evaluation_minutes": 7
   },
   "backstage": [
     {"id": "photographer", "person": "成员J", "label": "拍照官"},

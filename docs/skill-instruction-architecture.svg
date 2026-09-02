@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1100" viewBox="0 0 1800 1100">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="9" flood-color="#173746" flood-opacity="0.09"/></filter>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto"><path d="M0 0L11 5.5L0 11Z" fill="#C89B2B"/></marker>
+    <style>
+      .title{font:800 40px 'PingFang SC','Noto Sans SC',sans-serif;fill:#073B57}.sub{font:500 19px 'PingFang SC','Noto Sans SC',sans-serif;fill:#647681}
+      .root{font:800 26px 'PingFang SC','Noto Sans SC',sans-serif;fill:white;text-anchor:middle}.rootsub{font:500 16px 'PingFang SC','Noto Sans SC',sans-serif;fill:#D8E7ED;text-anchor:middle}
+      .col{font:800 23px 'PingFang SC','Noto Sans SC',sans-serif;fill:#073B57}.colsub{font:500 15px 'PingFang SC','Noto Sans SC',sans-serif;fill:#6B7B84}
+      .h{font:750 19px 'PingFang SC','Noto Sans SC',sans-serif;fill:#073B57}.p{font:500 15px 'PingFang SC','Noto Sans SC',sans-serif;fill:#536570}.code{font:700 15px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#772432}
+      .whiteh{font:750 19px 'PingFang SC','Noto Sans SC',sans-serif;fill:white}.whitep{font:500 15px 'PingFang SC','Noto Sans SC',sans-serif;fill:#E0ECF0}
+      .foothead{font:800 18px 'PingFang SC','Noto Sans SC',sans-serif;fill:#772432}.foot{font:550 15px 'PingFang SC','Noto Sans SC',sans-serif;fill:#294653}
+      .arrow{stroke:#C89B2B;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1800" height="1100" fill="#F7F5F0"/>
+  <rect x="0" y="0" width="1110" height="10" fill="#004165"/><rect x="1110" y="0" width="300" height="10" fill="#D5AA32"/><rect x="1410" y="0" width="390" height="10" fill="#772432"/>
+  <text x="65" y="67" class="title">Felix Toastmasters Agenda｜SKILL.md 指令架构</text>
+  <text x="65" y="104" class="sub">它只规定 Agent 每次必须遵守的用户体验、调用顺序与交付底线；确定性细节由程序保证</text>
+
+  <g filter="url(#shadow)">
+    <rect x="420" y="132" width="960" height="90" rx="22" fill="#004165"/>
+    <text x="900" y="170" class="root">核心价值：继承稳定内容，识别本期变化，重新计算并闭合整场会议</text>
+    <text x="900" y="199" class="rootsub">用户只说角色接龙、本期变化和自然语言修改；Agent 不把技术实现转嫁给用户</text>
+  </g>
+  <path d="M900 222V242H313V258" class="arrow"/><path d="M900 222V258" class="arrow"/><path d="M900 222V242H1487V258" class="arrow"/>
+
+  <rect x="45" y="260" width="535" height="590" rx="25" fill="#EAF2F5" stroke="#AFC5CE" stroke-width="2"/>
+  <text x="75" y="304" class="col">① 内容确认｜怎样和用户沟通</text>
+  <text x="75" y="332" class="colsub">允许自然多轮；承接已知信息，只补真正影响成品的缺项</text>
+  <g filter="url(#shadow)">
+    <rect x="75" y="355" width="475" height="105" rx="16" fill="#FFFFFF"/>
+    <text x="98" y="388" class="h">先说清当前进度</text>
+    <text x="98" y="419" class="p"><tspan x="98">已识别：俱乐部、时间、角色、演讲、特殊环节</tspan><tspan x="98" dy="25">再说明仍需补充什么；不重复追问已经确认的事实</tspan></text>
+
+    <rect x="75" y="477" width="475" height="195" rx="16" fill="#FFFFFF"/>
+    <text x="98" y="510" class="h">关键缺项必须显性确认</text>
+    <text x="98" y="542" class="p"><tspan x="98">特殊环节：标题、负责人、时长、相对位置</tspan><tspan x="98" dy="25">即兴演讲与即兴点评：每期都确认时长</tspan><tspan x="98" dy="25">合影休息、真情分享：可建议各10分钟，确认后才采用</tspan><tspan x="98" dy="25">总点评与真情分享留在收尾区；点评必须在对应环节后</tspan><tspan x="98" dy="25">信息接近齐全时：是否还有其他希望呈现在会单上的？</tspan></text>
+
+    <rect x="75" y="689" width="475" height="132" rx="16" fill="#FFFFFF"/>
+    <text x="98" y="722" class="h">可选内容与 Profile</text>
+    <text x="98" y="753" class="p"><tspan x="98">宣传亮点默认不展示；简介、官员、入会、二维码按需展示</tspan><tspan x="98" dy="25">内置公开 Profile 可直接沿用；本地 Profile 优先</tspan><tspan x="98" dy="25">本期事实最高优先；长期资料只有用户同意后才保存</tspan></text>
+  </g>
+
+  <rect x="632" y="260" width="535" height="590" rx="25" fill="#FFF8E8" stroke="#DEC477" stroke-width="2"/>
+  <text x="662" y="304" class="col">② confirm｜怎样形成可靠文字稿</text>
+  <text x="662" y="332" class="colsub">Agent 整理输入，程序合并资料、查缺项、组流程、算时间</text>
+  <g filter="url(#shadow)">
+    <rect x="662" y="355" width="475" height="105" rx="16" fill="#FFFFFF"/>
+    <text x="685" y="388" class="h">内部简易输入</text>
+    <text x="685" y="419" class="p"><tspan x="685">Agent 写入 </tspan><tspan class="code">simple_version: 1</tspan><tspan> 的 meeting.json</tspan><tspan x="685" dy="25">用户不配置 JSON、模板、列宽或 CSS</tspan></text>
+
+    <rect x="662" y="477" width="475" height="142" rx="16" fill="#004165"/>
+    <text x="685" y="512" class="whiteh">运行 confirm</text>
+    <text x="685" y="544" class="whitep"><tspan x="685">本地 Profile → 内置 Profile → 本期事实覆盖</tspan><tspan x="685" dy="25">检查缺项与超时 → 组装顺序 → 计算每段时间与串场</tspan><tspan x="685" dy="25">输出 agenda.md、计算事实与 facts_sha256 内容编号</tspan></text>
+
+    <rect x="662" y="636" width="475" height="58" rx="14" fill="#F8F1F2" stroke="#D8B6BD"/>
+    <text x="685" y="671" class="p"><tspan class="code">needs_input</tspan><tspan>　继续沟通，不能生图</tspan></text>
+    <rect x="662" y="706" width="475" height="58" rx="14" fill="#F8F1F2" stroke="#D8B6BD"/>
+    <text x="685" y="741" class="p"><tspan class="code">超时</tspan><tspan>　告知准确分钟和结束时间，用户同意后才能继续</tspan></text>
+    <rect x="662" y="776" width="475" height="58" rx="14" fill="#EEF6F1" stroke="#B7D0BF"/>
+    <text x="685" y="811" class="p"><tspan class="code">text_confirmation_ready</tspan><tspan>　完整展示 agenda.md，请用户核对全部文字</tspan></text>
+  </g>
+
+  <rect x="1219" y="260" width="535" height="590" rx="25" fill="#EEF6F1" stroke="#B7D0BF" stroke-width="2"/>
+  <text x="1249" y="304" class="col">③ image + final｜怎样生图与交付</text>
+  <text x="1249" y="332" class="colsub">文字确认是分界线：确认前不启动浏览器，确认后不改事实</text>
+  <g filter="url(#shadow)">
+    <rect x="1249" y="355" width="475" height="105" rx="16" fill="#FFFFFF"/>
+    <text x="1272" y="388" class="h">用户确认全部可见文字</text>
+    <text x="1272" y="419" class="p"><tspan x="1272">基本信息、流程、姓名、时长、演讲、俱乐部与入会文案</tspan><tspan x="1272" dy="25">任何文字有变化，都必须回到 confirm 取得新内容编号</tspan></text>
+
+    <rect x="1249" y="477" width="475" height="142" rx="16" fill="#004165"/>
+    <text x="1272" y="512" class="whiteh">运行 image</text>
+    <text x="1272" y="544" class="whitep"><tspan x="1272">只接受已确认的 agenda.computed.json + facts_sha256</tspan><tspan x="1272" dy="25">不重新解析角色、不再读取 Profile、不重新计算文字</tspan><tspan x="1272" dy="25">单一 Renderer 生成一页 A4 PNG/PDF，并检查裁切与字体</tspan></text>
+
+    <rect x="1249" y="636" width="475" height="185" rx="16" fill="#FFFFFF"/>
+    <text x="1272" y="669" class="h">自然语言修改与原样交付</text>
+    <text x="1272" y="701" class="p"><tspan x="1272">内容变化：回到 confirm，重新展示完整文字稿</tspan><tspan x="1272" dy="25">纯视觉变化：最小 view patch 回到 image，不改变事实</tspan><tspan x="1272" dy="25">“可以 / 就这样 / 直接导出”：运行 final</tspan><tspan x="1272" dy="25">final 只复制用户已经看到的 PDF/PNG，不重算、不重排</tspan></text>
+  </g>
+
+  <path d="M580 555H624" class="arrow"/><path d="M1167 555H1211" class="arrow"/>
+
+  <rect x="45" y="885" width="1710" height="145" rx="22" fill="#FFFFFF" stroke="#D7DEE1"/>
+  <text x="72" y="919" class="foothead">SKILL.md 最后守住四条边界</text>
+  <line x1="475" y1="938" x2="475" y2="1007" stroke="#D7DEE1"/><line x1="900" y1="938" x2="900" y2="1007" stroke="#D7DEE1"/><line x1="1325" y1="938" x2="1325" y2="1007" stroke="#D7DEE1"/>
+  <text x="72" y="958" class="h">Agent</text><text x="72" y="986" class="foot">理解用户、承接多轮沟通、展示程序结果</text>
+  <text x="502" y="958" class="h">业务程序</text><text x="502" y="986" class="foot">按确认时长算时间，不反推、不静默填满</text>
+  <text x="927" y="958" class="h">Renderer</text><text x="927" y="986" class="foot">官方 Logo、一页 A4、清晰可读、无裁切隐藏</text>
+  <text x="1352" y="958" class="h">最终成品</text><text x="1352" y="986" class="foot">支持中文、英文、双语；PDF/PNG 可直接使用</text>
+  <text x="900" y="1069" class="sub" text-anchor="middle">短入口告诉 Agent“何时做什么”；程序和测试保证“怎么算都不会错”。</text>
+</svg>

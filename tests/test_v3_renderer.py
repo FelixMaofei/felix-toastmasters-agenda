@@ -395,6 +395,21 @@ class V3AgendaRendererTests(unittest.TestCase):
         self.assertNotIn("file://", css)
         self.assertNotIn("/Users/", css)
 
+    def test_five_background_cards_fit_the_existing_two_row_grid(self) -> None:
+        spans = RENDERER._span_plan(
+            "background",
+            [
+                "toastmasters_intro",
+                "meeting_boundaries",
+                "join_info",
+                "optional_sessions",
+                "club_facts",
+            ],
+        )
+        self.assertEqual(spans, [2, 2, 1, 1, 2])
+        self.assertEqual(sum(spans[:2]), 4)
+        self.assertEqual(sum(spans[2:]), 4)
+
     def test_pathways_requires_real_timeline_data(self) -> None:
         computed = computed_case()
         view = view_case()

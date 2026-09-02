@@ -30,6 +30,78 @@ def valid_png(label: str) -> bytes:
 
 
 class AgendaRunnerTests(unittest.TestCase):
+    def test_duration_confirmation_gate_asks_once_with_both_suggestions(self) -> None:
+        gate = RUNNER.duration_confirmation_gate(
+            {
+                "duration_confirmation_items": [
+                    {"id": "photo_break", "label": "合影＋中场休息", "suggested_minutes": 10},
+                    {"id": "sharing", "label": "真情分享", "suggested_minutes": 10},
+                ],
+                "suggested_agenda_overrides": [
+                    {"id": "photo_break", "minutes": 10},
+                    {"id": "sharing", "minutes": 10},
+                ],
+            }
+        )
+
+        self.assertEqual(gate["error_type"], "duration_confirmation_required")
+        self.assertEqual(len(gate["required_duration_confirmations"]), 2)
+        self.assertIn(
+            "我为你默认安排了合影＋休息 10 分钟、真情分享 10 分钟，你觉得 OK 吗？",
+            gate["next_action"],
+        )
+
+    def test_duration_confirmation_precedes_overtime_from_unconfirmed_proposals(self) -> None:
+        computed = {
+            "delta_minutes": 10,
+            "final_end": "21:40",
+            "duration_confirmation_items": [
+                {"id": "photo_break", "label": "合影＋中场休息", "suggested_minutes": 10},
+                {"id": "sharing", "label": "真情分享", "suggested_minutes": 10},
+            ],
+            "suggested_agenda_overrides": [
+                {"id": "photo_break", "minutes": 10},
+                {"id": "sharing", "minutes": 10},
+            ],
+        }
+        duration_stop = RUNNER.duration_confirmation_gate(computed)
+        overtime_stop = (
+            RUNNER.simple_overtime_gate(computed, None)
+            if duration_stop is None
+            else None
+        )
+        self.assertIsNotNone(duration_stop)
+        self.assertIsNone(overtime_stop)
+
+    def test_overtime_confirmation_cli_accepts_only_positive_half_minutes(self) -> None:
+        self.assertEqual(RUNNER.positive_half_minute("11"), 11)
+        self.assertEqual(RUNNER.positive_half_minute("11.5"), 11.5)
+        self.assertEqual(RUNNER.positive_half_minute("11.0"), 11)
+        for value in ("0", "-1", "1.25", "nan", "yes"):
+            with self.subTest(value=value):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    RUNNER.positive_half_minute(value)
+
+    def test_overtime_gate_requires_a_second_exact_confirmation(self) -> None:
+        computed = {"delta_minutes": 11, "final_end": "21:41"}
+
+        initial = RUNNER.simple_overtime_gate(computed, None)
+        self.assertEqual(initial["error_type"], "overtime_confirmation_required")
+        self.assertEqual(initial["required_overtime_minutes"], 11)
+        self.assertIn("Do not change meeting.end", initial["next_action"])
+        self.assertIn("same turn", initial["next_action"])
+
+        mismatch = RUNNER.simple_overtime_gate(computed, 10.5)
+        self.assertEqual(mismatch["error_type"], "overtime_confirmation_mismatch")
+        self.assertEqual(mismatch["provided_overtime_minutes"], 10.5)
+
+        self.assertIsNone(RUNNER.simple_overtime_gate(computed, 11))
+
+        stale = RUNNER.simple_overtime_gate(
+            {"delta_minutes": 0, "final_end": "21:30"}, 11
+        )
+        self.assertEqual(stale["error_type"], "overtime_confirmation_rejected")
+
     def test_json_subprocess_output_is_parsed(self) -> None:
         code, payload = RUNNER.run_json_command(
             [sys.executable, "-c", 'print("{\\\"ok\\\": true}")']

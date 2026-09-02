@@ -33,9 +33,78 @@ RENDERER = load_module(
 
 
 def example() -> dict:
-    return json.loads(
-        (ROOT / "examples" / "meeting.example.json").read_text(encoding="utf-8")
+    data = json.loads(
+        (ROOT / "examples" / "meeting.fixture.json").read_text(encoding="utf-8")
     )
+    data["impromptu"].update({"minutes": 14, "evaluation_minutes": 7})
+    data["standard_overrides"] = [
+        {"id": "photo_break", "minutes": 4},
+        {"id": "sharing", "minutes": 6},
+    ]
+    return data
+
+
+def simple_example() -> dict:
+    canonical = example()
+    meeting = deepcopy(canonical["meeting"])
+    meeting.pop("approved_overtime_minutes", None)
+    return {
+        "simple_version": 1,
+        "club": deepcopy(canonical["club"]),
+        "meeting": meeting,
+        "roles": [
+            {"role": row["id"], "person": row["person"]}
+            for row in canonical["roles"]
+        ],
+        "speeches": deepcopy(canonical["prepared_speeches"]),
+        "impromptu": deepcopy(canonical["impromptu"]),
+        "backstage": [
+            {
+                "role": row["id"],
+                "person": row["person"],
+                "label": row["label"],
+            }
+            for row in canonical["backstage"]
+        ],
+        "special": [],
+    }
+
+
+def overrun_simple_example() -> dict:
+    data = simple_example()
+    data["impromptu"].update({"minutes": 14, "evaluation_minutes": 7})
+    data["agenda_overrides"] = [
+        {"id": "photo_break", "minutes": 4},
+        {"id": "sharing", "minutes": 6},
+    ]
+    data["special"] = [
+        {
+            "title": "额外工作坊",
+            "owner": "成员K",
+            "minutes": 10,
+            "after": "嘉宾介绍",
+        }
+    ]
+    return data
+
+
+def approved_canonical_overrun_example() -> dict:
+    data = example()
+    data["impromptu"].update({"minutes": 14, "evaluation_minutes": 7})
+    data["standard_overrides"] = [
+        {"id": "photo_break", "minutes": 4},
+        {"id": "sharing", "minutes": 6},
+    ]
+    data["special_segments"] = [
+        {
+            "title": "额外工作坊",
+            "owner": "成员K",
+            "minutes": 10,
+            "after": "guest_introduction",
+        }
+    ]
+    data["meeting"]["approved_overtime_minutes"] = 11
+    return data
 
 
 def valid_pdf() -> bytes:
@@ -91,7 +160,7 @@ def all_keys(value: object) -> set[str]:
 
 
 class V3FactsTests(unittest.TestCase):
-    def test_public_cli_exposes_only_first_and_final(self) -> None:
+    def test_public_cli_exposes_text_image_and_final_workflow(self) -> None:
         result = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "run_agenda.py"), "--help"],
             check=True,
@@ -102,9 +171,26 @@ class V3FactsTests(unittest.TestCase):
         usage = next(
             line for line in result.stdout.splitlines() if line.startswith("usage:")
         )
-        self.assertIn("{first,final}", usage)
+        self.assertIn("{first,confirm,image,final}", usage)
         for hidden in ("doctor", "draft", "preview", "prepare", "finalize"):
             self.assertNotIn(hidden, usage)
+
+        first_help = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "run_agenda.py"),
+                "first",
+                "--help",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("--confirm-overtime-minutes N", first_help.stdout)
+        self.assertIn(
+            "after the user explicitly approves",
+            " ".join(first_help.stdout.split()),
+        )
 
     def test_capacity_visual_audit_failures_trigger_compact_retry(self) -> None:
         for code in ("page_height", "page_overflow", "outside_page", "vertical_clip"):
@@ -142,7 +228,7 @@ class V3FactsTests(unittest.TestCase):
                 "visual_theme": "not-a-theme",
                 "visual_preferences": {"unknown": "value"},
                 "theme_image": "missing-image.png",
-                "end": "23:30",
+                "end": "23:18",
             }
         )
         data["prepared_speeches"] = [
@@ -299,11 +385,567 @@ class V3FactsTests(unittest.TestCase):
 
 
 class V3RunnerTests(unittest.TestCase):
+    def test_profile_feedback_reports_created_reused_and_updated_facts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            profile_root = temp_dir / "profiles"
+            data = example()
+            data["club"]["join_info"] = ["已确认的入会规则"]
+            data["club"]["custom_support_blocks"] = [
+                {
+                    "id": "guest_participation",
+                    "title": "嘉宾可参与环节",
+                    "lines": ["即兴演讲"],
+                }
+            ]
+            input_path.write_text(
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            )
+
+            code, created, _ = RUNNER.compute_facts(
+                input_path,
+                output_dir,
+                club_profile=data["club"]["name"],
+                profile_root=profile_root,
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(created["profile"]["status"], "created")
+            self.assertIn("俱乐部简介", created["profile"]["saved_labels"])
+            self.assertIn("官员名单", created["profile"]["saved_labels"])
+            self.assertIn("入会方式", created["profile"]["saved_labels"])
+            self.assertIn("嘉宾可参与环节", created["profile"]["saved_labels"])
+            self.assertIn("下次制作会单时", created["profile"]["user_message"])
+
+            code, reused, _ = RUNNER.compute_facts(
+                input_path,
+                output_dir,
+                club_profile=data["club"]["name"],
+                profile_root=profile_root,
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(reused["profile"]["status"], "reused")
+            self.assertIn("已沿用", reused["profile"]["user_message"])
+
+            data["club"]["club_intro"] = ["更新后的俱乐部简介"]
+            input_path.write_text(
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            )
+            code, updated, _ = RUNNER.compute_facts(
+                input_path,
+                output_dir,
+                club_profile=data["club"]["name"],
+                profile_root=profile_root,
+                update_club_profile=True,
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(updated["profile"]["status"], "updated")
+            self.assertIn("已记住", updated["profile"]["user_message"])
+
+    def test_bundled_public_profile_supports_fast_path_without_local_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            local_profile_root = temp_dir / "local-profiles"
+            data = simple_example()
+            data["club"] = {
+                "name": "明源云AI Lab头马俱乐部",
+                "language": "zh",
+            }
+            data["agenda_overrides"] = [
+                {"id": "photo_break", "minutes": 4},
+                {"id": "sharing", "minutes": 6},
+            ]
+            input_path.write_text(
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            )
+
+            with mock.patch.object(
+                RUNNER, "load_agenda_builder", return_value=BUILDER
+            ), mock.patch.object(BUILDER, "PROFILE_ROOT", local_profile_root):
+                code, payload, computed = RUNNER.compute_facts(
+                    input_path,
+                    output_dir,
+                    club_profile="明源云AI Lab头马俱乐部",
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["profile"]["status"], "bundled")
+            self.assertIn("Skill 内置", payload["profile"]["user_message"])
+            self.assertFalse(local_profile_root.exists())
+            self.assertIsNotNone(computed)
+            support_ids = [block["id"] for block in computed["support_blocks"]]
+            self.assertIn("club_intro", support_ids)
+            self.assertIn("officers", support_ids)
+            self.assertIn("join_info", support_ids)
+            self.assertIn("guest_participation", support_ids)
+
+    def test_confirm_text_stops_before_browser_and_returns_fact_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            input_path.write_text(
+                json.dumps(example(), ensure_ascii=False), encoding="utf-8"
+            )
+            args = argparse.Namespace(
+                input_json=input_path,
+                output_dir=output_dir,
+                club_profile=None,
+                update_club_profile=False,
+                profile_root=None,
+                confirm_overtime_minutes=None,
+            )
+            stdout = io.StringIO()
+            with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                mock.patch.object(RUNNER, "load_v3_renderer") as renderer, \
+                contextlib.redirect_stdout(stdout):
+                return_code = RUNNER.confirm_text(args)
+
+            self.assertEqual(return_code, 0)
+            exporter.assert_not_called()
+            renderer.assert_not_called()
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["stage"], "text_confirmation_ready")
+            self.assertEqual(len(payload["facts_sha256"]), 64)
+            self.assertTrue((output_dir / "agenda.md").is_file())
+            self.assertTrue((output_dir / "agenda.computed.json").is_file())
+            self.assertFalse((output_dir / "agenda.preview.png").exists())
+
+    def test_image_requires_the_exact_text_confirmed_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            input_path.write_text(
+                json.dumps(example(), ensure_ascii=False), encoding="utf-8"
+            )
+            confirm_args = argparse.Namespace(
+                input_json=input_path,
+                output_dir=output_dir,
+                club_profile=None,
+                update_club_profile=False,
+                profile_root=None,
+                confirm_overtime_minutes=None,
+            )
+            confirmed_stdout = io.StringIO()
+            with contextlib.redirect_stdout(confirmed_stdout):
+                self.assertEqual(RUNNER.confirm_text(confirm_args), 0)
+            confirmed = json.loads(confirmed_stdout.getvalue())
+
+            bad_stderr = io.StringIO()
+            with contextlib.redirect_stderr(bad_stderr):
+                self.assertEqual(
+                    RUNNER.image_from_confirmed(
+                        argparse.Namespace(
+                            input_computed=output_dir / "agenda.computed.json",
+                            confirmed_sha256="0" * 64,
+                            output_dir=output_dir,
+                            view_patch=None,
+                        )
+                    ),
+                    2,
+                )
+            self.assertEqual(
+                json.loads(bad_stderr.getvalue())["stage"],
+                "text_confirmation_required",
+            )
+
+            def fake_export(command: list[str], **_kwargs: object):
+                staging_dir = Path(command[-1])
+                (staging_dir / "agenda.pdf").write_bytes(valid_pdf())
+                (staging_dir / "agenda.png").write_bytes(valid_png())
+                return 0, {"ok": True, "pages": 1}
+
+            image_stdout = io.StringIO()
+            with mock.patch.object(
+                RUNNER, "run_json_command", side_effect=fake_export
+            ), mock.patch.object(
+                RUNNER, "load_v3_renderer", return_value=RENDERER.render_agenda
+            ), contextlib.redirect_stdout(image_stdout):
+                self.assertEqual(
+                    RUNNER.image_from_confirmed(
+                        argparse.Namespace(
+                            input_computed=output_dir / "agenda.computed.json",
+                            confirmed_sha256=confirmed["facts_sha256"],
+                            output_dir=output_dir,
+                            view_patch=None,
+                        )
+                    ),
+                    0,
+                )
+            self.assertEqual(
+                json.loads(image_stdout.getvalue())["stage"], "preview_ready"
+            )
+
+    def _first_args(
+        self,
+        input_path: Path,
+        output_dir: Path,
+        *,
+        confirm_overtime_minutes: int | float | None = None,
+    ) -> argparse.Namespace:
+        return argparse.Namespace(
+            input_json=input_path,
+            output_dir=output_dir,
+            club_profile=None,
+            update_club_profile=False,
+            profile_root=None,
+            view_patch=None,
+            confirm_overtime_minutes=confirm_overtime_minutes,
+        )
+
+    def test_simple_first_returns_both_break_and_sharing_suggestions_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            data = simple_example()
+            data.pop("standard_overrides", None)
+            input_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            stderr = io.StringIO()
+
+            with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                mock.patch.object(RUNNER, "load_v3_renderer") as renderer, \
+                contextlib.redirect_stderr(stderr):
+                return_code = RUNNER.first(self._first_args(input_path, output_dir))
+
+            self.assertEqual(return_code, 2)
+            exporter.assert_not_called()
+            renderer.assert_not_called()
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["stage"], "needs_input")
+            self.assertEqual(payload["error_type"], "duration_confirmation_required")
+            self.assertEqual(
+                payload["suggested_agenda_overrides"],
+                [
+                    {"id": "photo_break", "minutes": 10},
+                    {"id": "sharing", "minutes": 10},
+                ],
+            )
+            self.assertIn("我为你默认安排了合影＋休息 10 分钟、真情分享 10 分钟", payload["next_action"])
+            self.assertNotIn("approve exactly 10 overtime minutes", payload["next_action"])
+
+    def test_canonical_first_uses_the_same_duration_confirmation_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            data = example()
+            data["standard_overrides"] = []
+            input_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            stderr = io.StringIO()
+
+            with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                mock.patch.object(RUNNER, "load_v3_renderer") as renderer, \
+                contextlib.redirect_stderr(stderr):
+                return_code = RUNNER.first(self._first_args(input_path, output_dir))
+
+            self.assertEqual(return_code, 2)
+            exporter.assert_not_called()
+            renderer.assert_not_called()
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["stage"], "needs_input")
+            self.assertEqual(payload["error_type"], "duration_confirmation_required")
+            self.assertEqual(len(payload["required_duration_confirmations"]), 2)
+
+    def test_simple_overrun_stops_before_rendering_and_requires_user_confirmation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            input_path.write_text(
+                json.dumps(overrun_simple_example(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            stderr = io.StringIO()
+            with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                mock.patch.object(RUNNER, "load_v3_renderer") as renderer, \
+                contextlib.redirect_stderr(stderr):
+                return_code = RUNNER.first(self._first_args(input_path, output_dir))
+
+            self.assertEqual(return_code, 2)
+            exporter.assert_not_called()
+            renderer.assert_not_called()
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["stage"], "needs_input")
+            self.assertEqual(
+                payload["error_type"], "overtime_confirmation_required"
+            )
+            self.assertEqual(payload["required_overtime_minutes"], 11)
+            self.assertEqual(payload["provided_overtime_minutes"], None)
+            self.assertEqual(payload["proposed_final_end"], "21:41")
+            self.assertIn("Stop and ask the user", payload["next_action"])
+            self.assertIn("Do not change meeting.end", payload["next_action"])
+            self.assertIn("same turn", payload["next_action"])
+            self.assertFalse((output_dir / "agenda.preview.png").exists())
+
+    def test_first_returns_both_missing_impromptu_durations_before_rendering(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            data = simple_example()
+            data["impromptu"].pop("minutes")
+            data["impromptu"].pop("evaluation_minutes")
+            input_path.write_text(
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            )
+            stderr = io.StringIO()
+
+            with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                mock.patch.object(RUNNER, "load_v3_renderer") as renderer, \
+                contextlib.redirect_stderr(stderr):
+                return_code = RUNNER.first(self._first_args(input_path, output_dir))
+
+            self.assertEqual(return_code, 2)
+            exporter.assert_not_called()
+            renderer.assert_not_called()
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["stage"], "needs_input")
+            self.assertEqual(payload["error_type"], "simple_input")
+            self.assertEqual(
+                {
+                    (issue["code"], issue["path"])
+                    for issue in payload["errors"]
+                    if issue["path"].startswith("impromptu.")
+                },
+                {
+                    ("missing_value", "impromptu.minutes"),
+                    ("missing_value", "impromptu.evaluation_minutes"),
+                },
+            )
+            self.assertFalse((output_dir / "agenda.preview.png").exists())
+
+    def test_first_blocks_selected_join_info_when_profile_text_is_missing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            data = simple_example()
+            data["club"]["support_components"] = ["join_info"]
+            data["club"].pop("join_info", None)
+            input_path.write_text(
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            )
+            stderr = io.StringIO()
+
+            with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                mock.patch.object(RUNNER, "load_v3_renderer") as renderer, \
+                contextlib.redirect_stderr(stderr):
+                return_code = RUNNER.first(self._first_args(input_path, output_dir))
+
+            self.assertEqual(return_code, 2)
+            exporter.assert_not_called()
+            renderer.assert_not_called()
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["stage"], "needs_input")
+            self.assertIn(
+                "join_info component is selected but club.join_info is empty",
+                payload["errors"],
+            )
+            self.assertFalse((output_dir / "agenda.preview.png").exists())
+
+    def test_simple_overrun_exact_second_run_confirmation_creates_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            data = overrun_simple_example()
+            input_path.write_text(
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            )
+
+            def fake_export(command: list[str], **_kwargs: object):
+                staging_dir = Path(command[-1])
+                (staging_dir / "agenda.pdf").write_bytes(valid_pdf())
+                (staging_dir / "agenda.png").write_bytes(valid_png())
+                return 0, {"ok": True, "pages": 1}
+
+            stdout = io.StringIO()
+            with mock.patch.object(
+                RUNNER, "run_json_command", side_effect=fake_export
+            ), mock.patch.object(
+                RUNNER, "load_v3_renderer", return_value=RENDERER.render_agenda
+            ), contextlib.redirect_stdout(stdout):
+                return_code = RUNNER.first(
+                    self._first_args(
+                        input_path,
+                        output_dir,
+                        confirm_overtime_minutes=11,
+                    )
+                )
+
+            self.assertEqual(return_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["stage"], "preview_ready")
+            self.assertEqual(payload["computed"]["approved_overtime_minutes"], 11)
+            self.assertEqual(payload["computed"]["status"], "exact_with_approved_overtime")
+            self.assertEqual(payload["computed"]["final_end"], "21:41")
+            self.assertNotIn(
+                "approved_overtime_minutes",
+                json.loads(input_path.read_text(encoding="utf-8"))["meeting"],
+            )
+
+    def test_simple_overrun_exact_confirmation_exports_real_single_page_a4(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            input_path.write_text(
+                json.dumps(overrun_simple_example(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                return_code = RUNNER.first(
+                    self._first_args(
+                        input_path,
+                        output_dir,
+                        confirm_overtime_minutes=11,
+                    )
+                )
+
+            self.assertEqual(return_code, 0, stdout.getvalue())
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["stage"], "preview_ready")
+            manifest = json.loads(
+                (output_dir / "agenda.preview.manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(manifest["page_count"], 1)
+            self.assertTrue((output_dir / "agenda.preview.pdf").is_file())
+            self.assertTrue((output_dir / "agenda.preview.png").is_file())
+
+    def test_simple_overtime_confirmation_rejects_mismatch_and_no_overrun(self) -> None:
+        cases = (
+            (
+                "mismatch",
+                overrun_simple_example(),
+                10.5,
+                "overtime_confirmation_mismatch",
+                11,
+            ),
+            (
+                "no_overrun",
+                {
+                    **simple_example(),
+                    "agenda_overrides": [
+                        {"id": "photo_break", "minutes": 4},
+                        {"id": "sharing", "minutes": 6},
+                    ],
+                },
+                11,
+                "overtime_confirmation_rejected",
+                None,
+            ),
+        )
+        for name, data, confirmation, error_type, required in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp_text:
+                temp_dir = Path(temp_text)
+                input_path = temp_dir / "meeting.json"
+                output_dir = temp_dir / "output"
+                input_path.write_text(
+                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                )
+                stderr = io.StringIO()
+                with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                    mock.patch.object(RUNNER, "load_v3_renderer") as renderer, \
+                    contextlib.redirect_stderr(stderr):
+                    return_code = RUNNER.first(
+                        self._first_args(
+                            input_path,
+                            output_dir,
+                            confirm_overtime_minutes=confirmation,
+                        )
+                    )
+                self.assertEqual(return_code, 2)
+                exporter.assert_not_called()
+                renderer.assert_not_called()
+                payload = json.loads(stderr.getvalue())
+                self.assertEqual(payload["error_type"], error_type)
+                self.assertEqual(payload["required_overtime_minutes"], required)
+                self.assertEqual(
+                    payload["provided_overtime_minutes"], confirmation
+                )
+
+    def test_simple_json_overtime_approval_is_rejected_even_with_cli_confirmation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            data = overrun_simple_example()
+            data["meeting"]["approved_overtime_minutes"] = 11
+            input_path.write_text(
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            )
+            stderr = io.StringIO()
+            with mock.patch.object(RUNNER, "run_json_command") as exporter, \
+                mock.patch.object(RUNNER, "load_v3_renderer") as renderer, \
+                contextlib.redirect_stderr(stderr):
+                return_code = RUNNER.first(
+                    self._first_args(
+                        input_path,
+                        output_dir,
+                        confirm_overtime_minutes=11,
+                    )
+                )
+
+            self.assertEqual(return_code, 2)
+            exporter.assert_not_called()
+            renderer.assert_not_called()
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["error_type"], "simple_input")
+            self.assertTrue(
+                any(
+                    issue["code"] == "overtime_approval_not_allowed"
+                    for issue in payload["errors"]
+                )
+            )
+            self.assertIn("Do not change meeting.end", payload["next_action"])
+
+    def test_canonical_embedded_overtime_approval_remains_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_text:
+            temp_dir = Path(temp_text)
+            input_path = temp_dir / "meeting.json"
+            output_dir = temp_dir / "output"
+            input_path.write_text(
+                json.dumps(approved_canonical_overrun_example(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            code, payload, computed = RUNNER.compute_facts(input_path, output_dir)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["stage"], "facts_ready")
+            self.assertIsNotNone(computed)
+            self.assertEqual(
+                computed["computed"]["status"], "exact_with_approved_overtime"
+            )
+            self.assertEqual(computed["computed"]["final_end"], "21:41")
+
     def test_draft_writes_only_fact_stage_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_text:
-            output_dir = Path(temp_text) / "output"
+            temp_dir = Path(temp_text)
+            output_dir = temp_dir / "output"
+            input_path = temp_dir / "meeting.json"
+            input_path.write_text(
+                json.dumps(example(), ensure_ascii=False), encoding="utf-8"
+            )
             args = argparse.Namespace(
-                input_json=ROOT / "examples" / "meeting.example.json",
+                input_json=input_path,
                 output_dir=output_dir,
                 club_profile=None,
                 update_club_profile=False,

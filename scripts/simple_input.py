@@ -61,6 +61,10 @@ MEETING_FIELDS = {
     "word_of_day",
     "manager",
     "president",
+    # Reserved only so we can return a specific, actionable error.  A simple
+    # payload must never carry its own overtime approval; the second-run CLI
+    # confirmation gate in run_agenda.py supplies it in memory after the user
+    # explicitly agrees.
     "approved_overtime_minutes",
     "support_components",
     "custom_support_blocks",
@@ -100,6 +104,12 @@ ROLE_ALIASES: dict[str, tuple[str, ...]] = {
         "规则介绍",
         "规则宣讲",
         "规则官",
+        "事务官",
+        "事务官开场",
+        "会场事务官",
+        "saa",
+        "sergeant at arms",
+        "sergeant-at-arms",
     ),
     "toastmaster": (
         "toastmaster",
@@ -736,10 +746,21 @@ def _convert_impromptu(value: Any, errors: list[dict[str, Any]]) -> dict[str, An
     _check_fields(row, IMPROMPTU_FIELDS, "impromptu", errors)
     converted = _copy_known_fields(row, IMPROMPTU_FIELDS)
     converted["host"] = _required_text(row.get("host"), "impromptu.host", errors)
-    _validate_minutes(row.get("minutes", _MISSING), "impromptu.minutes", errors)
+    _validate_minutes(
+        row.get("minutes", _MISSING),
+        "impromptu.minutes",
+        errors,
+        required=True,
+    )
     if "evaluator" in row:
         converted["evaluator"] = _required_text(
             row.get("evaluator"), "impromptu.evaluator", errors
+        )
+        _validate_minutes(
+            row.get("evaluation_minutes", _MISSING),
+            "impromptu.evaluation_minutes",
+            errors,
+            required=True,
         )
     elif "evaluation_minutes" in row:
         _add_error(
@@ -749,11 +770,11 @@ def _convert_impromptu(value: Any, errors: list[dict[str, Any]]) -> dict[str, An
             message="impromptu.evaluation_minutes needs impromptu.evaluator",
             value=row.get("evaluation_minutes"),
         )
-    _validate_minutes(
-        row.get("evaluation_minutes", _MISSING),
-        "impromptu.evaluation_minutes",
-        errors,
-    )
+        _validate_minutes(
+            row.get("evaluation_minutes", _MISSING),
+            "impromptu.evaluation_minutes",
+            errors,
+        )
     return converted
 
 
@@ -864,6 +885,20 @@ def convert_simple_input(data: Mapping[str, Any]) -> dict[str, Any]:
     meeting = _read_object(data.get("meeting", {}), "meeting", errors)
     _check_fields(club, CLUB_FIELDS, "club", errors)
     _check_fields(meeting, MEETING_FIELDS, "meeting", errors)
+
+    if "approved_overtime_minutes" in meeting:
+        _add_error(
+            errors,
+            code="overtime_approval_not_allowed",
+            path="meeting.approved_overtime_minutes",
+            message=(
+                "meeting.approved_overtime_minutes cannot be stored in simple input; "
+                "remove it, run first without approval, and only after the user "
+                "explicitly accepts the reported overrun rerun first with "
+                "--confirm-overtime-minutes N"
+            ),
+            value=meeting.get("approved_overtime_minutes"),
+        )
 
     canonical_club = _copy_known_fields(club, CLUB_FIELDS)
     if "language" in canonical_club:

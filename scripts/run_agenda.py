@@ -23,6 +23,7 @@ BUILD_SCRIPT = SCRIPT_DIR / "build_agenda.py"
 EXPORT_SCRIPT = SCRIPT_DIR / "export_a4.py"
 RENDERER_SCRIPT = SCRIPT_DIR / "agenda_renderer.py"
 SIMPLE_INPUT_SCRIPT = SCRIPT_DIR / "simple_input.py"
+BUNDLED_PROFILE_ROOT = SCRIPT_DIR.parent / "profiles"
 V3_PREVIEW_META_RE = re.compile(
     r"<meta\s+(?=[^>]*\bname\s*=\s*['\"]agenda-workflow['\"])(?=[^>]*\bcontent\s*=\s*['\"]v3-preview['\"])[^>]*>",
     re.IGNORECASE,
@@ -398,6 +399,193 @@ def append_profile_options(command: list[str], args: argparse.Namespace) -> None
         )
 
 
+def positive_half_minute(value: str) -> int | float:
+    """Parse a positive CLI duration in exact half-minute increments."""
+
+    text = value.strip()
+    if re.fullmatch(r"(?:\d+)(?:\.0|\.5)?", text) is None:
+        raise argparse.ArgumentTypeError(
+            "must be a positive number in 0.5-minute increments"
+        )
+    number = float(text)
+    if number <= 0:
+        raise argparse.ArgumentTypeError(
+            "must be a positive number in 0.5-minute increments"
+        )
+    return int(number) if number.is_integer() else number
+
+
+def _same_minutes(left: object, right: object) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return False
+    if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+        return False
+    return abs(float(left) - float(right)) < 1e-9
+
+
+def simple_overtime_gate(
+    computed: dict[str, Any],
+    confirmation: int | float | None,
+) -> dict[str, Any] | None:
+    """Return an Agent-facing stop payload when simple-input overtime is unresolved.
+
+    The business engine remains the authority for the timeline calculation.  This
+    gate only separates an initial overrun report from the explicit second CLI run
+    that follows a user's approval.
+    """
+
+    raw_delta = computed.get("delta_minutes")
+    delta = (
+        raw_delta
+        if isinstance(raw_delta, (int, float)) and not isinstance(raw_delta, bool)
+        else None
+    )
+    if confirmation is None:
+        if delta is None or delta <= 0:
+            return None
+        return {
+            "error_type": "overtime_confirmation_required",
+            "required_overtime_minutes": delta,
+            "provided_overtime_minutes": None,
+            "proposed_final_end": computed.get("final_end"),
+            "next_action": (
+                f"Stop and ask the user to approve exactly {delta:g} overtime minutes "
+                f"(ending at {computed.get('final_end')}) or reduce content. Do not "
+                "change meeting.end, do not write approved_overtime_minutes into "
+                "meeting.json, and do not approve it yourself or use "
+                "--confirm-overtime-minutes in this same turn. Only after the user "
+                f"explicitly agrees, rerun first with --confirm-overtime-minutes {delta:g}."
+            ),
+        }
+    if delta is None or delta <= 0:
+        return {
+            "error_type": "overtime_confirmation_rejected",
+            "required_overtime_minutes": None,
+            "provided_overtime_minutes": confirmation,
+            "proposed_final_end": computed.get("final_end"),
+            "next_action": (
+                "Stop: there is no current overtime to approve. Remove "
+                "--confirm-overtime-minutes; do not store approval in meeting.json "
+                "or change meeting.end to manufacture a match."
+            ),
+        }
+    if not _same_minutes(confirmation, delta):
+        return {
+            "error_type": "overtime_confirmation_mismatch",
+            "required_overtime_minutes": delta,
+            "provided_overtime_minutes": confirmation,
+            "proposed_final_end": computed.get("final_end"),
+            "next_action": (
+                f"Stop: the current overrun is {delta:g} minutes, not "
+                f"{confirmation:g}. Do not change meeting.end or approve it yourself. "
+                f"Ask the user to approve exactly {delta:g} minutes or reduce content; "
+                "only after explicit approval rerun first with "
+                f"--confirm-overtime-minutes {delta:g}."
+            ),
+        }
+    return None
+
+
+def duration_confirmation_gate(computed: dict[str, Any]) -> dict[str, Any] | None:
+    """Turn unconfirmed break/sharing proposals into one Agent-facing question."""
+
+    raw_items = computed.get("duration_confirmation_items")
+    if not isinstance(raw_items, list) or not raw_items:
+        return None
+    items = [item for item in raw_items if isinstance(item, dict)]
+    if not items:
+        return None
+    suggested = computed.get("suggested_agenda_overrides")
+    if not isinstance(suggested, list):
+        suggested = []
+    zh_labels = {
+        "photo_break": "合影＋休息",
+        "sharing": "真情分享",
+    }
+    proposals = "、".join(
+        f"{zh_labels.get(str(item.get('id')), str(item.get('label', item.get('id', '环节'))))} "
+        f"{item.get('suggested_minutes')} 分钟"
+        for item in items
+    )
+    return {
+        "error_type": "duration_confirmation_required",
+        "required_duration_confirmations": items,
+        "suggested_agenda_overrides": suggested,
+        "next_action": (
+            f"Stop and ask the user once: “我为你默认安排了{proposals}，你觉得 OK 吗？” "
+            "If the user agrees, add every suggested entry to agenda_overrides and "
+            "rerun first. If not, record the durations they choose or explicitly disable "
+            "the unwanted item; do not infer either duration from spare meeting time."
+        ),
+    }
+
+
+PROFILE_USER_FIELDS = (
+    ("default_location", "常用地点"),
+    ("language", "会单语言"),
+    ("officers", "官员名单"),
+    ("club_intro", "俱乐部简介"),
+    ("join_info", "入会方式"),
+    ("vpm_qr_image", "入会二维码"),
+)
+
+
+def profile_feedback(
+    builder: Any,
+    profile_path: Path | None,
+    status: str,
+) -> dict[str, Any]:
+    """Describe only profile facts that were actually persisted or reused."""
+
+    if profile_path is None or not profile_path.is_file():
+        return {"status": "not_used", "saved_fields": [], "saved_labels": []}
+    profile_data = builder.load_json(profile_path)
+    club = profile_data.get("club", {})
+    if not isinstance(club, dict):
+        club = {}
+    fields: list[str] = []
+    labels: list[str] = []
+    for field, label in PROFILE_USER_FIELDS:
+        value = club.get(field)
+        if value in (None, "", [], {}):
+            continue
+        fields.append(field)
+        labels.append(label)
+    custom_blocks = club.get("custom_support_blocks")
+    if isinstance(custom_blocks, list) and custom_blocks:
+        fields.append("custom_support_blocks")
+        for block in custom_blocks:
+            if not isinstance(block, dict):
+                continue
+            title = str(block.get("title", "")).strip()
+            if title and title not in labels:
+                labels.append(title)
+    if status in {"created", "updated"}:
+        message = (
+            "已记住这家俱乐部的长期资料"
+            + ("：" + "、".join(labels) if labels else "")
+            + "。下次制作会单时，不需要再重复提供这些内容，只需告诉我本期角色接龙和变化。"
+        )
+    elif status == "bundled":
+        message = (
+            "已使用 Skill 内置的公开俱乐部资料"
+            + ("：" + "、".join(labels) if labels else "")
+            + "。你只需继续提供本期角色接龙和变化；本期明确内容仍然优先。"
+        )
+    else:
+        message = (
+            "已沿用这家俱乐部此前保存的长期资料"
+            + ("：" + "、".join(labels) if labels else "")
+            + "。本期明确内容仍然优先。"
+        )
+    return {
+        "status": status,
+        "saved_fields": fields,
+        "saved_labels": labels,
+        "user_message": message,
+    }
+
+
 def compute_facts(
     input_path: Path,
     output_dir: Path,
@@ -405,6 +593,7 @@ def compute_facts(
     club_profile: str | None = None,
     update_club_profile: bool = False,
     profile_root: Path | None = None,
+    confirm_overtime_minutes: int | float | None = None,
 ) -> tuple[int, dict[str, Any], dict[str, Any] | None]:
     """Build and persist the fact layer without invoking another CLI."""
 
@@ -413,6 +602,9 @@ def compute_facts(
     output_dir.mkdir(parents=True, exist_ok=True)
     stored_profile_path: Path | None = None
     stored_profile_existed = False
+    profile_source_path: Path | None = None
+    bundled_profile_used = False
+    simple_mode = False
     try:
         if not input_path.is_file():
             raise ValueError(f"input JSON does not exist: {input_path}")
@@ -422,22 +614,43 @@ def compute_facts(
             raise ValueError("--profile-root requires --club-profile")
         builder = load_agenda_builder()
         data = builder.load_json(input_path)
-        if isinstance(data, dict) and "simple_version" in data:
+        simple_mode = isinstance(data, dict) and "simple_version" in data
+        if simple_mode:
             simple_input = load_simple_input()
             try:
                 data = simple_input.convert_simple_input(data)
             except simple_input.SimpleInputError as exc:
                 payload = exc.to_payload()
+                error_codes = {
+                    issue.get("code")
+                    for issue in payload.get("errors", [])
+                    if isinstance(issue, dict)
+                }
+                if "overtime_approval_not_allowed" in error_codes:
+                    next_action = (
+                        "Remove meeting.approved_overtime_minutes from the simple JSON. "
+                        "Run first without overtime approval and stop for the user's answer "
+                        "if an overrun is reported. Do not change meeting.end and do not "
+                        "approve overtime in the same turn."
+                    )
+                else:
+                    next_action = (
+                        "Continue the conversation using the listed unresolved items. "
+                        "Group related questions when helpful, do not repeat confirmed facts, "
+                        "then update the same JSON and run confirm again."
+                    )
                 payload.update(
                     {
                         "warnings": [],
-                        "next_action": (
-                            "Ask all listed simple-input questions in one message, "
-                            "then update the same JSON and run first again."
-                        ),
+                        "next_action": next_action,
                     }
                 )
                 return 2, payload, None
+        elif confirm_overtime_minutes is not None:
+            raise ValueError(
+                "--confirm-overtime-minutes is only valid for simple_version 1 input; "
+                "canonical input keeps its existing approved_overtime_minutes interface"
+            )
         if club_profile:
             resolved_root = (
                 profile_root.expanduser().resolve()
@@ -448,9 +661,17 @@ def compute_facts(
                 club_profile, profile_root=resolved_root
             )
             stored_profile_existed = stored_profile_path.is_file()
-            if stored_profile_existed:
+            profile_source_path = stored_profile_path if stored_profile_existed else None
+            if profile_source_path is None and profile_root is None:
+                bundled_path = builder.stored_club_profile_path(
+                    club_profile, profile_root=BUNDLED_PROFILE_ROOT
+                )
+                if bundled_path.is_file():
+                    profile_source_path = bundled_path
+                    bundled_profile_used = True
+            if profile_source_path is not None:
                 profile_data = builder.resolve_profile_relative_paths(
-                    builder.load_json(stored_profile_path), stored_profile_path
+                    builder.load_json(profile_source_path), profile_source_path
                 )
                 stored_name = profile_data.get("club", {}).get("name", "")
                 if builder.normalized_club_name(
@@ -478,6 +699,17 @@ def compute_facts(
                     input_name
                 ) != builder.normalized_club_name(club_profile):
                     raise ValueError("input club.name does not match --club-profile")
+        if simple_mode:
+            meeting = data.setdefault("meeting", {})
+            if not isinstance(meeting, dict):
+                raise ValueError("meeting must be an object")
+            # Override any stale profile value.  Approval is intentionally
+            # ephemeral and never comes from the simple JSON or club profile.
+            meeting["approved_overtime_minutes"] = (
+                confirm_overtime_minutes
+                if confirm_overtime_minutes is not None
+                else 0
+            )
         computed, errors, warnings = builder.build_agenda(
             data,
             source_dir=input_path.parent,
@@ -496,25 +728,56 @@ def compute_facts(
         }
         return 2, payload, None
 
+    computed_summary = computed.get("computed", {})
+    if not isinstance(computed_summary, dict):
+        computed_summary = {}
+    duration_stop = duration_confirmation_gate(computed_summary)
+    overtime_stop = (
+        simple_overtime_gate(computed_summary, confirm_overtime_minutes)
+        if simple_mode and duration_stop is None
+        else None
+    )
     summary = {
         "ok": not errors,
-        "computed": computed.get("computed", {}),
+        "computed": computed_summary,
         "warnings": warnings,
         "errors": errors,
     }
     diagnostics_path = output_dir / "agenda.diagnostics.json"
     diagnostics_path.write_bytes(json_bytes(summary))
-    if errors:
+    if errors or overtime_stop is not None or duration_stop is not None:
+        next_action = (
+            overtime_stop["next_action"]
+            if overtime_stop is not None
+            else duration_stop["next_action"]
+            if duration_stop is not None
+            else (
+                "Explain the unresolved or conflicting facts and continue the conversation. "
+                "Do not repeat confirmed facts. After the user answers, update meeting.json "
+                "and run confirm again."
+            )
+        )
         return (
             2,
             {
                 **summary,
+                "ok": False,
                 "stage": "needs_input",
                 "outputs": {"diagnostics": str(diagnostics_path)},
-                "next_action": (
-                    "Ask all missing or conflicting facts in one message. After the user "
-                    "answers, update meeting.json and run first again."
+                **(
+                    {
+                        key: value
+                        for key, value in overtime_stop.items()
+                        if key != "next_action"
+                    }
+                    if overtime_stop is not None
+                    else {
+                        key: value
+                        for key, value in (duration_stop or {}).items()
+                        if key != "next_action"
+                    }
                 ),
+                "next_action": next_action,
             },
             None,
         )
@@ -570,18 +833,30 @@ def compute_facts(
             )
 
     saved_profile_path: Path | None = None
+    profile_status = "not_used"
     try:
-        if stored_profile_path and (
-            not stored_profile_existed or update_club_profile
-        ):
+        if stored_profile_path and update_club_profile:
             builder.write_club_profile(
                 data,
                 stored_profile_path,
                 source_dir=input_path.parent,
             )
             saved_profile_path = stored_profile_path
-        elif stored_profile_path:
+            profile_status = "updated" if stored_profile_existed else "created"
+        elif stored_profile_path and stored_profile_existed:
             saved_profile_path = stored_profile_path
+            profile_status = "reused"
+        elif bundled_profile_used and profile_source_path is not None:
+            saved_profile_path = profile_source_path
+            profile_status = "bundled"
+        elif stored_profile_path:
+            builder.write_club_profile(
+                data,
+                stored_profile_path,
+                source_dir=input_path.parent,
+            )
+            saved_profile_path = stored_profile_path
+            profile_status = "created"
     except (OSError, ValueError) as exc:
         return (
             2,
@@ -602,12 +877,14 @@ def compute_facts(
     }
     if saved_profile_path:
         outputs["club_profile"] = str(saved_profile_path)
+    profile = profile_feedback(builder, saved_profile_path, profile_status)
     return (
         0,
         {
             **summary,
             "stage": "facts_ready",
             "outputs": outputs,
+            "profile": profile,
         },
         computed_result,
     )
@@ -890,6 +1167,133 @@ def draft(args: argparse.Namespace) -> int:
     return code
 
 
+def confirm_text(args: argparse.Namespace) -> int:
+    """Build the fact layer and stop for human-readable content confirmation."""
+
+    code, payload, _ = compute_facts(
+        args.input_json,
+        args.output_dir,
+        club_profile=getattr(args, "club_profile", None),
+        update_club_profile=bool(getattr(args, "update_club_profile", False)),
+        profile_root=getattr(args, "profile_root", None),
+        confirm_overtime_minutes=getattr(args, "confirm_overtime_minutes", None),
+    )
+    if code != 0:
+        emit(payload, error=True)
+        return 2
+
+    outputs = dict(payload.get("outputs", {}))
+    computed_path = Path(str(outputs["computed_json"])).expanduser().resolve()
+    markdown_path = Path(str(outputs["markdown"])).expanduser().resolve()
+    facts_sha256 = file_sha256(computed_path)
+    outputs["confirmation_markdown"] = str(markdown_path)
+    emit(
+        {
+            **payload,
+            "stage": "text_confirmation_ready",
+            "outputs": outputs,
+            "facts_sha256": facts_sha256,
+            "next_action": (
+                "Show the complete confirmation Markdown to the user. Ask them to check "
+                "all visible wording, names, order, durations, location, club information "
+                "and joining information. Do not render an image until the user explicitly "
+                "confirms it."
+            ),
+        }
+    )
+    return 0
+
+
+def image_from_confirmed(args: argparse.Namespace) -> int:
+    """Render only the exact computed facts the user has already confirmed."""
+
+    try:
+        computed_path = args.input_computed.expanduser().resolve()
+        computed = load_json_object(computed_path, "confirmed agenda facts")
+        current_hash = file_sha256(computed_path)
+        confirmed_hash = str(args.confirmed_sha256).strip().lower()
+        if confirmed_hash != current_hash:
+            raise ValueError(
+                "confirmed text no longer matches agenda.computed.json; show the updated "
+                "text confirmation before rendering"
+            )
+        output_dir = args.output_dir.expanduser().resolve()
+        explicit_patch = getattr(args, "view_patch", None)
+        persisted_patch = output_dir / V3_VIEW_PATCH_NAME
+        patch_path = (
+            explicit_patch.expanduser().resolve()
+            if explicit_patch is not None
+            else persisted_patch
+            if persisted_patch.is_file()
+            else None
+        )
+        patch = (
+            load_json_object(patch_path, "agenda view patch")
+            if patch_path is not None
+            else None
+        )
+        view = build_default_view(computed)
+        if patch is not None:
+            view = merge_view_patch(view, patch)
+    except (OSError, ValueError) as exc:
+        emit(
+            {
+                "ok": False,
+                "stage": "text_confirmation_required",
+                "errors": [str(exc)],
+                "next_action": "Run confirm again and show the updated text before rendering.",
+            },
+            error=True,
+        )
+        return 2
+
+    preview_code, preview_payload = render_preview_bundle(
+        computed,
+        view,
+        output_dir,
+        facts_sha256=current_hash,
+        view_patch=patch,
+    )
+    compact_retry = False
+    patch_controls_density = patch is not None and "density" in patch
+    if (
+        preview_code != 0
+        and not patch_controls_density
+        and is_only_single_page_overflow(preview_payload)
+    ):
+        compact_retry = True
+        view["density"] = "compact"
+        preview_code, preview_payload = render_preview_bundle(
+            computed,
+            view,
+            output_dir,
+            facts_sha256=current_hash,
+            view_patch=patch,
+        )
+    if preview_code != 0:
+        emit({**preview_payload, "compact_retry": compact_retry}, error=True)
+        return 2
+
+    preview_outputs = dict(preview_payload.get("outputs", {}))
+    preview_outputs["computed_json"] = str(computed_path)
+    markdown_path = computed_path.with_name("agenda.md")
+    if markdown_path.is_file():
+        preview_outputs["confirmation_markdown"] = str(markdown_path)
+    emit(
+        {
+            **preview_payload,
+            "stage": "preview_ready",
+            "outputs": preview_outputs,
+            "computed": computed.get("computed", {}),
+            "language": computed.get("club", {}).get("language"),
+            "warnings": [],
+            "errors": [],
+            "compact_retry": compact_retry,
+        }
+    )
+    return 0
+
+
 def preview(args: argparse.Namespace) -> int:
     """Compatibility command for rendering an already-computed fact file."""
 
@@ -922,6 +1326,7 @@ def first(args: argparse.Namespace) -> int:
         club_profile=getattr(args, "club_profile", None),
         update_club_profile=bool(getattr(args, "update_club_profile", False)),
         profile_root=getattr(args, "profile_root", None),
+        confirm_overtime_minutes=getattr(args, "confirm_overtime_minutes", None),
     )
     if fact_code != 0 or computed is None:
         emit(fact_payload, error=True)
@@ -1276,6 +1681,15 @@ def main() -> None:
     first_parser.add_argument("--club-profile", type=str, default=None)
     first_parser.add_argument("--update-club-profile", action="store_true")
     first_parser.add_argument(
+        "--confirm-overtime-minutes",
+        type=positive_half_minute,
+        default=None,
+        metavar="N",
+        help=(
+            "second run only: pass the exact overrun after the user explicitly approves it"
+        ),
+    )
+    first_parser.add_argument(
         "--view-patch",
         type=Path,
         default=None,
@@ -1285,6 +1699,33 @@ def main() -> None:
         "--profile-root", type=Path, default=None, help=argparse.SUPPRESS
     )
     first_parser.set_defaults(handler=first)
+
+    confirm_parser = subparsers.add_parser(
+        "confirm", help="build a complete text agenda and wait for user confirmation"
+    )
+    confirm_parser.add_argument("input_json", type=Path)
+    confirm_parser.add_argument("--output-dir", type=Path, default=Path("output"))
+    confirm_parser.add_argument("--club-profile", type=str, default=None)
+    confirm_parser.add_argument("--update-club-profile", action="store_true")
+    confirm_parser.add_argument(
+        "--confirm-overtime-minutes",
+        type=positive_half_minute,
+        default=None,
+        metavar="N",
+    )
+    confirm_parser.add_argument(
+        "--profile-root", type=Path, default=None, help=argparse.SUPPRESS
+    )
+    confirm_parser.set_defaults(handler=confirm_text)
+
+    image_parser = subparsers.add_parser(
+        "image", help="render the exact text-confirmed facts as an A4 preview"
+    )
+    image_parser.add_argument("input_computed", type=Path)
+    image_parser.add_argument("--confirmed-sha256", required=True)
+    image_parser.add_argument("--output-dir", type=Path, default=Path("output"))
+    image_parser.add_argument("--view-patch", type=Path, default=None)
+    image_parser.set_defaults(handler=image_from_confirmed)
 
     final_parser = subparsers.add_parser(
         "final", help="promote the already-rendered preview PDF and PNG"

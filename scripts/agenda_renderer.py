@@ -888,6 +888,13 @@ def _span_plan(group: str, component_ids: Sequence[str]) -> list[int]:
         return [1, 1, 2] if group == "operations" else [2, 2, 4]
     if count == 4:
         return [1, 1, 1, 1] if group == "operations" else [2, 2, 2, 2]
+    if count == 5 and group == "background":
+        # A V4.1 profile can already use four background cards. V4.2 adds the
+        # short default joining card, so keep the five cards in two grid rows
+        # instead of creating a third row that pushes an otherwise valid A4
+        # agenda off the page. The usual order gives the two text-heavy cards
+        # half a row each and keeps the final custom card half-width.
+        return [2, 2, 1, 1, 2]
     if group == "operations":
         if count % 2:
             return [1, 1, 2] + [2] * (count - 3)
